@@ -11,6 +11,19 @@ npm start          # http://localhost:3000 (PORT 환경변수로 변경 가능)
 
 다른 PC에서 접속하려면 같은 네트워크에서 `http://<이 PC의 IP>:3000` 으로 접속하세요.
 
+## Docker로 실행
+
+```bash
+docker compose up -d          # 빌드 + 실행 (http://localhost:9757)
+PORT=8080 docker compose up -d  # 다른 포트로
+docker compose logs -f        # 로그
+docker compose down           # 중지
+```
+
+기본 호스트 포트는 9757입니다 (배포 서버의 빈 포트 기준). PORT 환경변수로 변경할 수 있습니다.
+
+서버(리눅스)에서도 Docker+Compose만 있으면 동일하게 동작합니다.
+
 ## 기능
 
 | 기능 | 설명 |

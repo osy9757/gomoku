@@ -1,0 +1,8 @@
+services:
+  gomoku:
+    build: .
+    image: gomoku:latest
+    ports:
+      - "${PORT:-9757}:3000"
+    restart: unless-stopped
+    init: true

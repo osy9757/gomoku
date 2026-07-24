@@ -56,8 +56,17 @@
             <button class="mode-tab" data-mode="online" type="button">온라인 대전</button>
           </div>
 
-          <!-- 규칙 선택 -->
-          <div class="rule-select">
+          <!-- 게임 선택 -->
+          <div class="rule-select game-select">
+            <span class="rule-label">게임</span>
+            <div class="rule-options">
+              <label class="rule-opt"><input type="radio" name="game" value="omok" checked /> 오목</label>
+              <label class="rule-opt"><input type="radio" name="game" value="othello" /> 오델로</label>
+            </div>
+          </div>
+
+          <!-- 규칙 선택 (오목 전용) -->
+          <div class="rule-select" id="ruleRow">
             <span class="rule-label">규칙</span>
             <div class="rule-options">
               <label class="rule-opt"><input type="radio" name="rule" value="renju" checked /> 렌주룰</label>
@@ -122,6 +131,10 @@
           <div class="info-row">
             <span class="info-label">현재 차례</span>
             <span class="info-value"><span class="stone-icon small black" id="turnStone"></span><span id="turnText">흑돌</span></span>
+          </div>
+          <div class="info-row" id="scoreRow" hidden>
+            <span class="info-label">점수</span>
+            <span class="info-value score-value"><span class="stone-icon small black"></span><span id="scoreBlack">2</span><span class="score-sep">:</span><span id="scoreWhite">2</span><span class="stone-icon small white"></span></span>
           </div>
           <div class="info-row">
             <span class="info-label">게임 상태</span>
@@ -218,6 +231,7 @@
   <div class="toast" id="toast" hidden></div>
 
   <script src="rules.js"></script>
+  <script src="othello.js"></script>
   <script src="game.js"></script>
 </body>
 </html>

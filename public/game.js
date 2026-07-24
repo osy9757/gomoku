@@ -6,9 +6,18 @@
   'use strict';
 
   var R = window.Rules;
-  var SIZE = R.BOARD_SIZE;          // 15
-  var BLACK = R.BLACK, WHITE = R.WHITE, EMPTY = R.EMPTY;
+  var O = window.Othello;
+  var BLACK = R.BLACK, WHITE = R.WHITE, EMPTY = R.EMPTY; // 오목/오델로 공통 (1,2,0)
+  var SIZE = R.BOARD_SIZE;          // 현재 게임 보드 크기 (오목 15 / 오델로 8)
   var STAR_POINTS = [[3, 3], [3, 11], [7, 7], [11, 3], [11, 11]];
+  // 오델로 보드 표식 위치(격자 교차점 기준)
+  var OTHELLO_DOTS = [[2, 2], [2, 6], [6, 2], [6, 6]];
+
+  // 현재 게임의 규칙 모듈
+  function curMod() { return state.game === 'othello' ? O : R; }
+  function newBoard() { return curMod().createBoard(); }
+  function boardSize() { return state.game === 'othello' ? O.BOARD_SIZE : R.BOARD_SIZE; }
+  function otherColor(c) { return c === BLACK ? WHITE : BLACK; }
 
   // ── DOM ────────────────────────────────────────────────
   var $ = function (id) { return document.getElementById(id); };
@@ -25,14 +34,17 @@
   // ── 상태 ────────────────────────────────────────────────
   var state = {
     mode: 'local',        // 'local' | 'online'
+    game: 'omok',         // 'omok' | 'othello'
     rule: 'renju',        // 'renju' | 'free'
     theme: 'default',     // 'default' | 'excel'
     board: R.createBoard(),
-    moves: [],            // {row,col,color}
+    moves: [],            // 오목: {row,col,color} / 오델로: {kind:'move',row,col,color,flipped}|{kind:'pass',color}
     turn: BLACK,
     gameOver: false,
     winner: null,         // BLACK/WHITE/0(무승부)/null
     winStones: [],
+    lastFlipped: [],      // 오델로: 직전 착수로 뒤집힌 좌표 (플립 애니메이션용)
+    othelloCounts: { black: 2, white: 2 },
     times: { 1: 0, 2: 0 }, // 초 단위
     // online
     ws: null,
@@ -44,7 +56,8 @@
     intentionalClose: false
   };
 
-  var UNIT = 100 / 16; // 엑셀 테마 단위(%) — 헤더 1 + 셀 15
+  // 엑셀 테마 단위(%) — 헤더 1 + 셀 SIZE
+  function excelUnit() { return 100 / (SIZE + 1); }
 
   // ============================================================
   // 유틸
@@ -57,11 +70,27 @@
   function colorStr(c) { return c === BLACK ? 'black' : 'white'; }
   function colorNum(s) { return s === 'black' ? BLACK : WHITE; }
   function coordLabel(row, col) {
+    if (state.game === 'othello') {
+      // 오델로 표준 표기: a-h(소문자) + 1-8 (위에서 아래로)
+      return String.fromCharCode(97 + col) + (row + 1);
+    }
     return String.fromCharCode(65 + col) + (SIZE - row);
   }
-  // 엑셀 테마 전용: 화면에 보이는 행 헤더(1..15, 위에서 아래로)를 그대로 반영
+  // 엑셀 테마 전용: 화면에 보이는 행 헤더(1..N, 위에서 아래로)를 그대로 반영
   function excelCoordLabel(row, col) {
     return String.fromCharCode(65 + col) + (row + 1);
+  }
+  // 기보/하이라이트용: 마지막 실제 착수(패스 제외)
+  function lastRealMove() {
+    for (var i = state.moves.length - 1; i >= 0; i--) {
+      var m = state.moves[i];
+      if (state.game === 'othello') {
+        if (m.kind === 'move') return m;
+      } else {
+        return m;
+      }
+    }
+    return null;
   }
   function fmtTime(sec) {
     var m = Math.floor(sec / 60), s = sec % 60;
@@ -85,6 +114,29 @@
     canvas.style.height = size + 'px';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, size, size);
+
+    if (state.game === 'othello') {
+      // 8x8 셀 격자 (칸 기준). 진한 녹색 라인.
+      var ocell = size / SIZE;
+      ctx.strokeStyle = 'rgba(12,60,30,0.85)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (var oi = 0; oi <= SIZE; oi++) {
+        var op = Math.round(oi * ocell) + 0.5;
+        ctx.moveTo(op, 0.5); ctx.lineTo(op, size - 0.5);
+        ctx.moveTo(0.5, op); ctx.lineTo(size - 0.5, op);
+      }
+      ctx.stroke();
+      // 표식 점 (격자 교차점)
+      ctx.fillStyle = 'rgba(8,45,22,0.9)';
+      OTHELLO_DOTS.forEach(function (d) {
+        ctx.beginPath();
+        ctx.arc(d[1] * ocell, d[0] * ocell, Math.max(2.5, ocell * 0.09), 0, Math.PI * 2);
+        ctx.fill();
+      });
+      return;
+    }
+
     var cell = size / (SIZE - 1);
     ctx.strokeStyle = 'rgba(60,40,20,0.75)';
     ctx.lineWidth = 1;
@@ -107,43 +159,44 @@
   function buildExcelGrid() {
     excelHeaders.innerHTML = '';
     boardCells.innerHTML = '';
+    var U = excelUnit();
     // 모서리
     var corner = document.createElement('div');
     corner.className = 'col-head';
     corner.style.left = '0'; corner.style.top = '0';
-    corner.style.width = UNIT + '%'; corner.style.height = UNIT + '%';
+    corner.style.width = U + '%'; corner.style.height = U + '%';
     excelHeaders.appendChild(corner);
-    // 열 헤더 A..O
+    // 열 헤더 A..(A+SIZE-1)
     for (var c = 0; c < SIZE; c++) {
       var ch = document.createElement('div');
       ch.className = 'col-head';
-      ch.style.left = (UNIT * (c + 1)) + '%';
+      ch.style.left = (U * (c + 1)) + '%';
       ch.style.top = '0';
-      ch.style.width = UNIT + '%'; ch.style.height = UNIT + '%';
+      ch.style.width = U + '%'; ch.style.height = U + '%';
       ch.textContent = String.fromCharCode(65 + c);
       excelHeaders.appendChild(ch);
     }
-    // 행 헤더 1..15
+    // 행 헤더 1..SIZE
     for (var r = 0; r < SIZE; r++) {
       var rh = document.createElement('div');
       rh.className = 'row-head';
       rh.style.left = '0';
-      rh.style.top = (UNIT * (r + 1)) + '%';
-      rh.style.width = UNIT + '%'; rh.style.height = UNIT + '%';
+      rh.style.top = (U * (r + 1)) + '%';
+      rh.style.width = U + '%'; rh.style.height = U + '%';
       rh.textContent = (r + 1);
       excelHeaders.appendChild(rh);
     }
     // 셀
-    var last = state.moves.length ? state.moves[state.moves.length - 1] : null;
+    var last = lastRealMove();
     for (var rr = 0; rr < SIZE; rr++) {
       for (var cc = 0; cc < SIZE; cc++) {
         var cellDiv = document.createElement('div');
         cellDiv.className = 'grid-cell';
         if (last && last.row === rr && last.col === cc) cellDiv.className += ' last-move';
-        cellDiv.style.left = (UNIT * (cc + 1)) + '%';
-        cellDiv.style.top = (UNIT * (rr + 1)) + '%';
-        cellDiv.style.width = UNIT + '%';
-        cellDiv.style.height = UNIT + '%';
+        cellDiv.style.left = (U * (cc + 1)) + '%';
+        cellDiv.style.top = (U * (rr + 1)) + '%';
+        cellDiv.style.width = U + '%';
+        cellDiv.style.height = U + '%';
         boardCells.appendChild(cellDiv);
       }
     }
@@ -153,12 +206,16 @@
   function stoneGeom(row, col) {
     var size = innerSize();
     if (state.theme === 'excel') {
-      var u = size / 16;
+      var u = size / (SIZE + 1);
       return {
         x: u * (col + 1.5),
         y: u * (row + 1.5),
-        d: u * 0.68
+        d: u * (state.game === 'othello' ? 0.8 : 0.68)
       };
+    }
+    if (state.game === 'othello') {
+      var ocell = size / SIZE;
+      return { x: (col + 0.5) * ocell, y: (row + 0.5) * ocell, d: ocell * 0.8 };
     }
     var cell = size / (SIZE - 1);
     return { x: col * cell, y: row * cell, d: cell * 0.9 };
@@ -221,14 +278,79 @@
     });
   }
 
+  // ── 오델로 렌더링 ─────────────────────────────────────
+  function renderDiscs() {
+    stonesLayer.innerHTML = '';
+    var flipSet = {};
+    (state.lastFlipped || []).forEach(function (f) { flipSet[f[0] + ',' + f[1]] = true; });
+    for (var r = 0; r < SIZE; r++) {
+      for (var c = 0; c < SIZE; c++) {
+        var v = state.board[r][c];
+        if (v === EMPTY) continue;
+        var g = stoneGeom(r, c);
+        var el = document.createElement('div');
+        el.className = 'disc ' + colorStr(v);
+        if (flipSet[r + ',' + c]) el.className += ' flip';
+        el.style.left = g.x + 'px';
+        el.style.top = g.y + 'px';
+        el.style.width = g.d + 'px';
+        el.style.height = g.d + 'px';
+        stonesLayer.appendChild(el);
+      }
+    }
+    // 마지막 착수 표식 (기본 테마)
+    if (state.theme !== 'excel') {
+      var last = lastRealMove();
+      if (last) {
+        var lg = stoneGeom(last.row, last.col);
+        var mk = document.createElement('div');
+        mk.className = 'othello-last';
+        mk.style.left = lg.x + 'px';
+        mk.style.top = lg.y + 'px';
+        mk.style.width = lg.d + 'px';
+        mk.style.height = lg.d + 'px';
+        stonesLayer.appendChild(mk);
+      }
+    }
+  }
+
+  function shouldShowOthelloHints() {
+    if (state.gameOver) return false;
+    if (state.online) {
+      return state.started && state.turn === colorNum(state.myColor);
+    }
+    return true;
+  }
+
+  function renderOthelloHints() {
+    markersLayer.innerHTML = '';
+    if (!shouldShowOthelloHints()) return;
+    var moves = O.legalMoves(state.board, state.turn);
+    moves.forEach(function (m) {
+      var g = stoneGeom(m.row, m.col);
+      var dot = document.createElement('div');
+      dot.className = 'move-hint';
+      dot.style.left = g.x + 'px';
+      dot.style.top = g.y + 'px';
+      dot.style.width = (g.d * 0.32) + 'px';
+      dot.style.height = (g.d * 0.32) + 'px';
+      markersLayer.appendChild(dot);
+    });
+  }
+
   function renderBoard() {
     if (state.theme === 'excel') {
       buildExcelGrid();
     } else {
       drawLines();
     }
-    renderStones();
-    renderMarkers();
+    if (state.game === 'othello') {
+      renderDiscs();
+      renderOthelloHints();
+    } else {
+      renderStones();
+      renderMarkers();
+    }
   }
 
   // ============================================================
@@ -263,6 +385,20 @@
     else if (state.winner === WHITE) gs = '백돌 승리';
     $('gameStateText').textContent = gs;
 
+    // 오델로 점수 표시
+    var scoreRow = $('scoreRow');
+    if (scoreRow) {
+      if (state.game === 'othello') {
+        scoreRow.hidden = false;
+        var cnt = O.counts(state.board);
+        state.othelloCounts = cnt;
+        $('scoreBlack').textContent = cnt.black;
+        $('scoreWhite').textContent = cnt.white;
+      } else {
+        scoreRow.hidden = true;
+      }
+    }
+
     // 온라인 태그
     if (state.online && state.started) {
       var meBlack = state.myColor === 'black';
@@ -296,11 +432,12 @@
   function updateExcelFormula() {
     var nb = $('excelNameBox'), fx = $('excelFormula');
     if (!nb || !fx) return;
-    if (state.moves.length) {
-      var last = state.moves[state.moves.length - 1];
+    var last = lastRealMove();
+    if (last) {
       var lbl = excelCoordLabel(last.row, last.col);
       nb.textContent = lbl;
-      fx.textContent = '=OMOK("' + (last.color === BLACK ? '흑돌' : '백돌') + '","' + lbl + '")';
+      var fn = state.game === 'othello' ? 'OTHELLO' : 'OMOK';
+      fx.textContent = '=' + fn + '("' + (last.color === BLACK ? '흑돌' : '백돌') + '","' + lbl + '")';
     } else {
       nb.textContent = 'A1';
       fx.textContent = '';
@@ -317,19 +454,32 @@
       return;
     }
     empty.style.display = 'none';
+    var seq = 0;
     state.moves.forEach(function (mv, i) {
       var row = document.createElement('div');
       row.className = 'move-row' + (i === state.moves.length - 1 ? ' latest' : '');
       var num = document.createElement('span');
       num.className = 'move-num';
-      num.textContent = (i + 1 < 10 ? '0' : '') + (i + 1) + '.';
       var icon = document.createElement('span');
       icon.className = 'stone-icon small ' + colorStr(mv.color);
       var name = document.createElement('span');
-      name.textContent = mv.color === BLACK ? '흑돌' : '백돌';
       var coord = document.createElement('span');
       coord.className = 'move-coord';
-      coord.textContent = coordLabel(mv.row, mv.col);
+
+      if (state.game === 'othello' && mv.kind === 'pass') {
+        num.textContent = '··';
+        name.textContent = mv.color === BLACK ? '흑돌' : '백돌';
+        coord.textContent = '패스';
+      } else {
+        seq++;
+        num.textContent = (seq < 10 ? '0' : '') + seq + '.';
+        name.textContent = mv.color === BLACK ? '흑돌' : '백돌';
+        var label = coordLabel(mv.row, mv.col);
+        if (state.game === 'othello' && mv.flipped) {
+          label += ' (+' + mv.flipped.length + ')';
+        }
+        coord.textContent = label;
+      }
       row.appendChild(num); row.appendChild(icon); row.appendChild(name); row.appendChild(coord);
       list.appendChild(row);
     });
@@ -389,6 +539,114 @@
     showResultModal(0);
   }
 
+  // ── 오델로 로직 ───────────────────────────────────────
+  function finishOthello(winner, cnt) {
+    state.gameOver = true;
+    state.winner = winner;
+    if (cnt) state.othelloCounts = cnt;
+    renderBoard();
+    updateSidebar();
+    showResultModal(winner, state.othelloCounts);
+  }
+
+  // 오델로 로컬 착수
+  function tryLocalPlaceOthello(row, col) {
+    if (state.gameOver) return;
+    var color = state.turn;
+    var res = O.applyMove(state.board, row, col, color);
+    if (!res) { toast('둘 수 없는 자리입니다'); return; }
+    state.board = res.board;
+    state.lastFlipped = res.flipped;
+    state.moves.push({ kind: 'move', row: row, col: col, color: color, flipped: res.flipped });
+    advanceOthelloTurn(color);
+  }
+
+  // 착수 후 턴 전환 + 패스/종료 처리 (mover = 방금 둔 색)
+  function advanceOthelloTurn(mover) {
+    var opp = otherColor(mover);
+    var oppHas = O.hasAnyMove(state.board, opp);
+    var meHas = O.hasAnyMove(state.board, mover);
+    if (!oppHas && !meHas) {
+      finishOthello(O.winner(state.board), O.counts(state.board));
+      renderMoveList();
+      return;
+    }
+    if (!oppHas) {
+      // 상대가 둘 곳 없음 -> 패스, 턴 유지
+      state.moves.push({ kind: 'pass', color: opp });
+      state.turn = mover;
+      toast('상대가 둘 곳이 없어 차례를 넘깁니다');
+    } else {
+      state.turn = opp;
+    }
+    renderBoard();
+    updateSidebar();
+    renderMoveList();
+  }
+
+  // 오델로 원격 착수 반영
+  function applyRemoteMoveOthello(msg) {
+    var color = colorNum(msg.color);
+    state.board[msg.row][msg.col] = color;
+    (msg.flipped || []).forEach(function (f) { state.board[f[0]][f[1]] = color; });
+    state.lastFlipped = msg.flipped || [];
+    state.moves.push({ kind: 'move', row: msg.row, col: msg.col, color: color, flipped: msg.flipped || [] });
+    if (msg.passed) {
+      var pc = colorNum(msg.passColor);
+      state.moves.push({ kind: 'pass', color: pc });
+      if (pc === colorNum(state.myColor)) toast('둘 곳이 없어 차례가 넘어갑니다');
+    }
+    if (msg.over) {
+      finishOthello(msg.winner, msg.counts);
+      renderMoveList();
+      return;
+    }
+    state.turn = colorNum(msg.nextTurn);
+    renderBoard();
+    updateSidebar();
+    renderMoveList();
+  }
+
+  // 오델로 로컬 무르기 (뒤집힘 복원)
+  function localUndoOthello() {
+    while (state.moves.length && state.moves[state.moves.length - 1].kind === 'pass') {
+      state.moves.pop();
+    }
+    if (!state.moves.length) return;
+    var m = state.moves.pop();
+    var opp = otherColor(m.color);
+    state.board[m.row][m.col] = EMPTY;
+    (m.flipped || []).forEach(function (f) { state.board[f[0]][f[1]] = opp; });
+    state.turn = m.color;
+    state.lastFlipped = [];
+    state.gameOver = false;
+    state.winner = null;
+    hideModal();
+    renderBoard();
+    updateSidebar();
+    renderMoveList();
+  }
+
+  // 오델로 원격 무르기 (서버 권위 보드 반영)
+  function remoteUndoOthello(msg) {
+    if (msg.board) {
+      state.board = msg.board;
+    }
+    // 기보 미러링: 후행 패스 + 실착수 1개 제거
+    while (state.moves.length && state.moves[state.moves.length - 1].kind === 'pass') {
+      state.moves.pop();
+    }
+    if (state.moves.length) state.moves.pop();
+    state.turn = msg.turn ? colorNum(msg.turn) : state.turn;
+    state.lastFlipped = [];
+    state.gameOver = false;
+    state.winner = null;
+    hideModal();
+    renderBoard();
+    updateSidebar();
+    renderMoveList();
+  }
+
   // 로컬 착수 시도
   function tryLocalPlace(row, col) {
     if (state.gameOver) return;
@@ -429,12 +687,19 @@
     var y = e.clientY - rect.top;
     var size = rect.width;
     if (state.theme === 'excel') {
-      var u = size / 16;
+      var u = size / (SIZE + 1);
       if (x < u || y < u) return null; // 헤더 영역
       var col = Math.floor((x - u) / u);
       var row = Math.floor((y - u) / u);
       if (row < 0 || row >= SIZE || col < 0 || col >= SIZE) return null;
       return { row: row, col: col };
+    }
+    if (state.game === 'othello') {
+      var ocell = size / SIZE;
+      var oc = Math.floor(x / ocell);
+      var orow = Math.floor(y / ocell);
+      if (orow < 0 || orow >= SIZE || oc < 0 || oc >= SIZE) return null;
+      return { row: orow, col: oc };
     }
     var cell = size / (SIZE - 1);
     var col2 = Math.round(x / cell);
@@ -449,6 +714,14 @@
     if (state.online) {
       if (!state.started || state.gameOver) return;
       if (state.turn !== colorNum(state.myColor)) { toast('상대 차례입니다'); return; }
+      if (state.game === 'othello') {
+        if (O.flipsFor(state.board, cell.row, cell.col, state.turn).length === 0) {
+          toast('둘 수 없는 자리입니다');
+          return;
+        }
+        wsSend({ type: 'move', row: cell.row, col: cell.col });
+        return;
+      }
       if (state.board[cell.row][cell.col] !== EMPTY) return;
       if (state.rule === 'renju' && state.turn === BLACK) {
         var t = R.forbiddenType(state.board, cell.row, cell.col);
@@ -456,23 +729,33 @@
       }
       wsSend({ type: 'move', row: cell.row, col: cell.col });
     } else {
-      tryLocalPlace(cell.row, cell.col);
+      if (state.game === 'othello') {
+        tryLocalPlaceOthello(cell.row, cell.col);
+      } else {
+        tryLocalPlace(cell.row, cell.col);
+      }
     }
   });
 
   // ============================================================
   // 모달 / 토스트
   // ============================================================
-  function showResultModal(winner) {
+  function showResultModal(winner, counts) {
     var modal = $('resultModal');
     var stone = $('modalStone'), title = $('modalTitle'), msg = $('modalMessage');
+    var scoreStr = '';
+    if (state.game === 'othello' && counts) {
+      scoreStr = ' (' + counts.black + ' : ' + counts.white + ')';
+    }
     if (winner === 0) {
       stone.className = 'modal-stone draw';
-      title.textContent = '무승부!';
-      msg.textContent = '바둑판이 가득 찼습니다. 우열을 가리지 못했네요.';
+      title.textContent = '무승부!' + scoreStr;
+      msg.textContent = state.game === 'othello'
+        ? '돌 개수가 같습니다. 막상막하의 승부였네요.'
+        : '바둑판이 가득 찼습니다. 우열을 가리지 못했네요.';
     } else {
       stone.className = 'modal-stone ' + colorStr(winner);
-      title.textContent = (winner === BLACK ? '흑돌' : '백돌') + ' 승리!';
+      title.textContent = (winner === BLACK ? '흑돌' : '백돌') + ' 승리!' + scoreStr;
       if (state.online) {
         var iWon = state.myColor === colorStr(winner);
         msg.textContent = iWon ? '축하합니다! 승리하셨습니다.' : '아쉽네요. 다음 판을 노려보세요.';
@@ -497,12 +780,13 @@
   // 리셋 / 무르기 / 새 게임
   // ============================================================
   function resetGameState(swapColorsInfo) {
-    state.board = R.createBoard();
+    state.board = newBoard();
     state.moves = [];
     state.turn = BLACK;
     state.gameOver = false;
     state.winner = null;
     state.winStones = [];
+    state.lastFlipped = [];
     state.times = { 1: 0, 2: 0 };
     hideModal();
     renderBoard();
@@ -523,6 +807,7 @@
   }
 
   function localUndo() {
+    if (state.game === 'othello') { localUndoOthello(); return; }
     if (!state.moves.length) return;
     var last = state.moves.pop();
     state.board[last.row][last.col] = EMPTY;
@@ -601,6 +886,47 @@
   }
 
   // ============================================================
+  // 게임 선택 (오목 / 오델로)
+  // ============================================================
+  Array.prototype.slice.call(document.querySelectorAll('input[name="game"]')).forEach(function (radio) {
+    radio.addEventListener('change', function () {
+      if (state.online) return; // 온라인은 방 생성자가 결정
+      if (radio.value === state.game) return;
+      setGame(radio.value);
+    });
+  });
+
+  function applyGameUI() {
+    var radios = document.querySelectorAll('input[name="game"]');
+    Array.prototype.slice.call(radios).forEach(function (rr) {
+      rr.checked = rr.value === state.game;
+      rr.disabled = state.online;
+    });
+  }
+
+  // 게임 종류에 따른 레이아웃/보드 크기/타이틀 반영 (리셋은 별도)
+  function applyGameLayout() {
+    SIZE = boardSize();
+    document.body.classList.toggle('game-othello', state.game === 'othello');
+    var ruleRow = $('ruleRow');
+    if (ruleRow) ruleRow.hidden = (state.game === 'othello');
+    var title = document.querySelector('.site-title');
+    var sub = document.querySelector('.site-subtitle');
+    if (title) title.textContent = state.game === 'othello' ? '오델로' : '오목';
+    if (sub) sub.textContent = '온라인 2인용 대국';
+    document.title = (state.game === 'othello' ? '오델로' : '오목') + ' · 온라인 2인용 대국';
+    applyGameUI();
+  }
+
+  // 게임 전환 (로컬): 레이아웃 적용 후 현재 판 리셋
+  function setGame(game) {
+    state.game = game;
+    localStorage.setItem('omok_game', game);
+    applyGameLayout();
+    resetGameState();
+  }
+
+  // ============================================================
   // 모드 탭
   // ============================================================
   Array.prototype.slice.call(document.querySelectorAll('.mode-tab')).forEach(function (tab) {
@@ -631,6 +957,7 @@
       resetLobbyActions();
     }
     applyRuleUI();
+    applyGameUI();
     resetGameState();
   }
 
@@ -690,7 +1017,9 @@
         state.myColor = msg.color; // black
         state.roomCode = msg.code;
         state.rule = msg.rule;
+        if (msg.game) { state.game = msg.game; applyGameLayout(); }
         applyRuleUI();
+        resetGameStateKeepOnline();
         $('roomInfo').hidden = false;
         $('roomCodeText').textContent = msg.code;
         $('roomStatusText').textContent = '상대를 기다리는 중...';
@@ -704,7 +1033,9 @@
         state.myColor = msg.color; // white
         state.roomCode = msg.code;
         state.rule = msg.rule;
+        if (msg.game) { state.game = msg.game; applyGameLayout(); }
         applyRuleUI();
+        resetGameStateKeepOnline();
         $('roomInfo').hidden = false;
         $('roomCodeText').textContent = msg.code;
         $('btnCreateRoom').disabled = true;
@@ -716,6 +1047,7 @@
       case 'start':
         state.started = true;
         state.rule = msg.rule;
+        if (msg.game) { state.game = msg.game; applyGameLayout(); }
         state.turn = BLACK;
         applyRuleUI();
         resetGameStateKeepOnline();
@@ -725,11 +1057,16 @@
         break;
 
       case 'move':
-        applyRemoteMove(msg.row, msg.col, msg.color, msg.win);
+        if (msg.game === 'othello' || state.game === 'othello') {
+          applyRemoteMoveOthello(msg);
+        } else {
+          applyRemoteMove(msg.row, msg.col, msg.color, msg.win);
+        }
         break;
 
       case 'invalid':
         if (msg.reason === 'forbidden' && msg.ftype) toast(R.FORBIDDEN_LABEL[msg.ftype] || '금수입니다');
+        else if (msg.reason === 'illegal') toast('둘 수 없는 자리입니다');
         break;
 
       case 'chat':
@@ -744,7 +1081,11 @@
         break;
 
       case 'undo':
-        remoteUndo();
+        if (msg.game === 'othello' || state.game === 'othello') {
+          remoteUndoOthello(msg);
+        } else {
+          remoteUndo();
+        }
         addChatSystem('무르기가 적용되었습니다.');
         break;
 
@@ -811,12 +1152,13 @@
   }
 
   function resetGameStateKeepOnline() {
-    state.board = R.createBoard();
+    state.board = newBoard();
     state.moves = [];
     state.turn = BLACK;
     state.gameOver = false;
     state.winner = null;
     state.winStones = [];
+    state.lastFlipped = [];
     state.times = { 1: 0, 2: 0 };
     hideModal();
     renderBoard();
@@ -844,8 +1186,9 @@
     var colorEl = document.querySelector('input[name="myColor"]:checked');
     var color = colorEl ? colorEl.value : 'black';
     state.rule = rule;
+    var game = state.game;
     connectSocket(function () {
-      wsSend({ type: 'create', rule: rule, color: color });
+      wsSend({ type: 'create', rule: rule, color: color, game: game });
     });
   });
 
@@ -972,13 +1315,20 @@
     // 저장된 설정 복원
     var savedRule = localStorage.getItem('omok_rule');
     if (savedRule === 'free' || savedRule === 'renju') state.rule = savedRule;
+    var savedGame = localStorage.getItem('omok_game');
+    if (savedGame === 'othello' || savedGame === 'omok') state.game = savedGame;
     var savedTheme = localStorage.getItem('omok_theme');
+
+    // 저장된 게임에 맞춰 보드/레이아웃 초기화
+    SIZE = boardSize();
+    state.board = newBoard();
 
     // 푸터
     var year = new Date().getFullYear();
     $('footerText').textContent = '© ' + year + ' 오목 미니 게임 온라인 플레이 | 친구를 초대하여 무료로 2인용 오목 게임을 즐겨보세요!';
 
     applyRuleUI();
+    applyGameLayout();
     if (savedTheme === 'excel') applyTheme('excel');
     else applyTheme('default');
 

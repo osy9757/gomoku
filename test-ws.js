@@ -1,6 +1,7 @@
 /* 온라인 WebSocket 흐름 검증 */
 const WebSocket = require('ws');
-const URL = 'ws://localhost:3457/ws';
+const PORT = process.env.PORT || 3457;
+const URL = 'ws://localhost:' + PORT + '/ws';
 
 let pass = 0, fail = 0;
 function assert(name, cond) {
@@ -176,6 +177,47 @@ function send(ws, o) { ws.send(JSON.stringify(o)); }
   assert('착수 후 스왑 무시(no swapped)', !h4Msgs.some(m => m.type === 'swapped') && !g4Msgs.some(m => m.type === 'swapped'));
   h4.close(); g4.close();
   await wait(80);
+
+  // ============================================================
+  // 14. 오델로 방: create(game:'othello') -> join -> 흑 d3 착수
+  //     좌표 d3 = (row 2, col 3), 뒤집힘 d4 = (row 3, col 3)
+  // ============================================================
+  const o1 = await open();
+  send(o1, { type: 'create', rule: 'renju', color: 'black', game: 'othello' });
+  const oc = await next(o1);
+  assert('오델로 created game 필드', oc.type === 'created' && oc.game === 'othello' && oc.color === 'black');
+  const o1Msgs = [];
+  o1.on('message', (d) => o1Msgs.push(JSON.parse(d.toString())));
+  const o2 = await open();
+  const o2Msgs = [];
+  o2.on('message', (d) => o2Msgs.push(JSON.parse(d.toString())));
+  send(o2, { type: 'join', code: oc.code });
+  await wait(100);
+  const oJoined = o2Msgs.find(m => m.type === 'joined');
+  assert('오델로 joined game 필드', oJoined && oJoined.game === 'othello' && oJoined.color === 'white');
+  const oStart = o2Msgs.find(m => m.type === 'start');
+  assert('오델로 start game 필드', oStart && oStart.game === 'othello');
+
+  // 흑(생성자) d3=(2,3) 착수 -> 양쪽 move + flips 적용
+  o1Msgs.length = 0; o2Msgs.length = 0;
+  send(o1, { type: 'move', row: 2, col: 3 });
+  await wait(100);
+  const oMoveHost = o1Msgs.find(m => m.type === 'move');
+  const oMoveGuest = o2Msgs.find(m => m.type === 'move');
+  const flipD4 = (m) => m && m.flipped && m.flipped.some(f => f[0] === 3 && f[1] === 3) && m.flipped.length === 1;
+  assert('오델로 host move + d4 flip', oMoveHost && oMoveHost.color === 'black' && flipD4(oMoveHost));
+  assert('오델로 guest move + d4 flip', oMoveGuest && flipD4(oMoveGuest));
+  assert('오델로 move counts/nextTurn', oMoveHost && oMoveHost.counts && oMoveHost.counts.black === 4 && oMoveHost.nextTurn === 'white');
+
+  // 비합법 착수 (백이 a1=(0,0), 뒤집을 돌 없음) -> move 브로드캐스트 없음
+  o1Msgs.length = 0; o2Msgs.length = 0;
+  send(o2, { type: 'move', row: 0, col: 0 });
+  await wait(80);
+  assert('오델로 비합법 착수 무시', !o1Msgs.some(m => m.type === 'move') && o2Msgs.some(m => m.type === 'invalid'));
+
+  o1.close(); o2.close();
+  await wait(80);
+
   console.log('\n결과: ' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail === 0 ? 0 : 1);
 })();

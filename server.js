@@ -11,6 +11,15 @@ const http = require('http');
 const express = require('express');
 const WebSocket = require('ws');
 const Rules = require('./public/rules.js');
+const Othello = require('./public/othello.js');
+
+// 방의 게임 종류에 맞는 규칙 모듈 반환
+function gameModule(game) {
+  return game === 'othello' ? Othello : Rules;
+}
+function colorToStr(c) {
+  return c === Rules.BLACK ? 'black' : 'white';
+}
 
 const PORT = process.env.PORT || 3000;
 
@@ -54,8 +63,9 @@ function playerOf(room, ws) {
 }
 
 function resetRoomBoard(room) {
-  room.board = Rules.createBoard();
-  room.turn = Rules.BLACK;
+  var M = gameModule(room.game);
+  room.board = M.createBoard();
+  room.turn = M.BLACK;
   room.moves = [];
 }
 
@@ -73,7 +83,9 @@ wss.on('connection', (ws) => {
 
     switch (msg.type) {
       case 'create': {
+        const game = msg.game === 'othello' ? 'othello' : 'omok';
         const rule = msg.rule === 'free' ? 'free' : 'renju';
+        const M = gameModule(game);
         // 생성자 색 선호: 'black' | 'white' | 'random' (기본 black)
         let pref = msg.color;
         if (pref !== 'white' && pref !== 'black' && pref !== 'random') pref = 'black';
@@ -86,9 +98,10 @@ wss.on('connection', (ws) => {
         const code = genCode();
         const room = {
           code: code,
+          game: game,
           rule: rule,
-          board: Rules.createBoard(),
-          turn: Rules.BLACK,
+          board: M.createBoard(),
+          turn: M.BLACK,
           moves: [],
           players: [{ ws: ws, color: creatorColor }]
         };
@@ -97,8 +110,9 @@ wss.on('connection', (ws) => {
         send(ws, {
           type: 'created',
           code: code,
-          color: creatorColor === Rules.BLACK ? 'black' : 'white',
-          rule: rule
+          color: colorToStr(creatorColor),
+          rule: rule,
+          game: game
         });
         break;
       }
@@ -122,14 +136,16 @@ wss.on('connection', (ws) => {
         send(ws, {
           type: 'joined',
           code: code,
-          color: joinColor === Rules.BLACK ? 'black' : 'white',
-          rule: room.rule
+          color: colorToStr(joinColor),
+          rule: room.rule,
+          game: room.game
         });
         // 양쪽에 시작 알림
         broadcast(room, {
           type: 'start',
           code: code,
           rule: room.rule,
+          game: room.game,
           turn: 'black'
         });
         break;
@@ -143,6 +159,51 @@ wss.on('connection', (ws) => {
         if (me.color !== room.turn) return; // 내 차례 아님
         const r = msg.row | 0;
         const c = msg.col | 0;
+
+        if (room.game === 'othello') {
+          const res = Othello.applyMove(room.board, r, c, me.color);
+          if (!res) {
+            const reason = room.board[r] && room.board[r][c] !== Othello.EMPTY ? 'occupied' : 'illegal';
+            send(ws, { type: 'invalid', row: r, col: c, reason: reason });
+            return;
+          }
+          room.board = res.board;
+          room.moves.push({ kind: 'move', row: r, col: c, color: me.color, flipped: res.flipped });
+          const colorStr = colorToStr(me.color);
+          const opp = me.color === Rules.BLACK ? Rules.WHITE : Rules.BLACK;
+          const oppHas = Othello.hasAnyMove(room.board, opp);
+          const meHas = Othello.hasAnyMove(room.board, me.color);
+          let passed = false, over = false, winner = null;
+          let nextColor;
+          if (!oppHas && !meHas) {
+            over = true;
+            winner = Othello.winner(room.board);
+            nextColor = null;
+          } else if (!oppHas) {
+            passed = true;
+            room.turn = me.color;             // 상대가 패스, 턴 유지
+            room.moves.push({ kind: 'pass', color: opp });
+            nextColor = me.color;
+          } else {
+            room.turn = opp;
+            nextColor = opp;
+          }
+          broadcast(room, {
+            type: 'move',
+            game: 'othello',
+            row: r, col: c,
+            color: colorStr,
+            flipped: res.flipped,
+            passed: passed,
+            passColor: colorToStr(opp),
+            over: over,
+            winner: winner,
+            counts: Othello.counts(room.board),
+            nextTurn: nextColor === null ? null : colorToStr(nextColor)
+          });
+          break;
+        }
+
         const v = Rules.validateMove(room.board, r, c, me.color, room.rule);
         if (!v.ok) {
           send(ws, { type: 'invalid', row: r, col: c, reason: v.reason, ftype: v.type || null });
@@ -150,7 +211,7 @@ wss.on('connection', (ws) => {
         }
         room.board[r][c] = me.color;
         room.moves.push({ row: r, col: c, color: me.color });
-        const colorStr = me.color === Rules.BLACK ? 'black' : 'white';
+        const colorStr = colorToStr(me.color);
         const win = Rules.checkWinAt(room.board, r, c, me.color, room.rule);
         room.turn = me.color === Rules.BLACK ? Rules.WHITE : Rules.BLACK;
         broadcast(room, { type: 'move', row: r, col: c, color: colorStr, win: win });
@@ -180,12 +241,33 @@ wss.on('connection', (ws) => {
         const room = rooms.get(ws.roomCode);
         if (!room) return;
         if (msg.accept) {
-          if (room.moves.length > 0) {
-            const last = room.moves.pop();
-            room.board[last.row][last.col] = Rules.EMPTY;
-            room.turn = last.color; // 무른 사람 차례로 복귀
+          if (room.game === 'othello') {
+            // 후행 패스 엔트리 제거 후 마지막 실착수 되돌리기
+            while (room.moves.length > 0 && room.moves[room.moves.length - 1].kind === 'pass') {
+              room.moves.pop();
+            }
+            if (room.moves.length > 0) {
+              const last = room.moves.pop();
+              const opp = last.color === Othello.BLACK ? Othello.WHITE : Othello.BLACK;
+              room.board[last.row][last.col] = Othello.EMPTY;
+              last.flipped.forEach(function (f) { room.board[f[0]][f[1]] = opp; });
+              room.turn = last.color; // 무른 사람 차례로 복귀
+            }
+            broadcast(room, {
+              type: 'undo',
+              game: 'othello',
+              board: room.board,
+              turn: colorToStr(room.turn),
+              counts: Othello.counts(room.board)
+            });
+          } else {
+            if (room.moves.length > 0) {
+              const last = room.moves.pop();
+              room.board[last.row][last.col] = Rules.EMPTY;
+              room.turn = last.color; // 무른 사람 차례로 복귀
+            }
+            broadcast(room, { type: 'undo' });
           }
-          broadcast(room, { type: 'undo' });
         } else {
           const opp = opponentOf(room, ws);
           if (opp) send(opp.ws, { type: 'undoRejected' });

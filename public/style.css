@@ -356,6 +356,70 @@ body {
   pointer-events: none;
 }
 
+/* ============================================================
+   오델로(리버시) — 기본 테마 (녹색 펠트)
+   ============================================================ */
+body.game-othello .board-inner {
+  background:
+    radial-gradient(circle at 50% 30%, #35935240 0%, transparent 60%),
+    #2d7a45;
+}
+body.game-othello .board { background: var(--wood-frame); }
+
+/* 돌(디스크) */
+.disc {
+  position: absolute;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 3;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.45);
+}
+.disc.black {
+  background: radial-gradient(circle at 38% 32%, #565656 0%, #101010 75%);
+}
+.disc.white {
+  background: radial-gradient(circle at 38% 32%, #ffffff 0%, #d0d0d0 80%);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(0, 0, 0, 0.06);
+}
+.disc.flip { animation: disc-flip 0.4s ease; }
+@keyframes disc-flip {
+  0% { transform: translate(-50%, -50%) scaleX(1); }
+  48% { transform: translate(-50%, -50%) scaleX(0.08); }
+  100% { transform: translate(-50%, -50%) scaleX(1); }
+}
+
+/* 합법 착수 힌트 점 */
+.move-hint {
+  position: absolute;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(255, 255, 255, 0.5);
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* 마지막 착수 링 (기본 테마) */
+.othello-last {
+  position: absolute;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 2px rgba(255, 210, 60, 0.9);
+  z-index: 4;
+  pointer-events: none;
+}
+
+/* 점수 표시 */
+.score-value { gap: 4px; }
+.score-value .score-sep { color: var(--ink-soft); margin: 0 2px; }
+
+/* 오델로 엑셀 테마: 힌트/디스크 */
+body.theme-excel.game-othello .move-hint { background: rgba(120, 120, 120, 0.4); }
+body.theme-excel .disc { box-shadow: none; }
+body.theme-excel .disc.black { background: #1a1a1a; }
+body.theme-excel .disc.white { background: #fff; border: 1px solid #999; box-sizing: border-box; box-shadow: none; }
+body.theme-excel .othello-last { box-shadow: none; display: none; }
+body.theme-excel.game-othello .board-inner { background: #fff; }
+
 /* ---------- 기보 ---------- */
 .record-card { display: flex; flex-direction: column; }
 .move-list {
@@ -798,10 +862,11 @@ body.theme-excel .chat-bubble.me { background: #217346; border-radius: 4px; }
 body.theme-excel .chat-bubble.them { border-radius: 4px; }
 
 /* ---------- 반응형 ---------- */
-@media (max-width: 980px) {
+@media (max-width: 1199px) {
   .layout {
     grid-template-columns: 1fr;
   }
+  .panel { max-width: 640px; margin: 0 auto; }
   .board-area { order: -1; }
   :root { --board-size: min(90vw, 520px); }
 }
