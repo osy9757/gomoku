@@ -25,7 +25,13 @@
   --gray-d: #6f6f6f;
   --amber: #f6e3b4;
 
-  --board-size: min(80vw, 560px);
+  /* 보드는 "뷰포트"가 아니라 "컨테이너" 기준으로 크기가 정해진다.
+     --board-max 는 상한선일 뿐이며, 실제 크기는 항상 부모 열(column) 폭을 따른다. */
+  --board-max: 560px;
+  /* 세로 스택 레이아웃에서 패널/보드가 공유하는 최대 폭 */
+  --stack-max: 560px;
+  /* 페이지 좌우 여백 */
+  --page-pad-x: 20px;
 }
 
 * { box-sizing: border-box; }
@@ -47,9 +53,21 @@ body {
 }
 
 .page {
-  max-width: 1200px;
+  max-width: 1320px;
   margin: 0 auto;
-  padding: 28px 20px 40px;
+  padding: 14px var(--page-pad-x) 40px;
+}
+
+/* ---------- 상단 툴바 (테마 토글 자리) ----------
+   테마 토글은 fixed 가 아니라 문서 흐름 안에 놓여
+   엑셀 크롬/사이트 타이틀과 절대 겹치지 않는다. */
+.toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  min-height: 34px;
 }
 
 /* ---------- 헤더 ---------- */
@@ -59,29 +77,42 @@ body {
 }
 .site-title {
   font-family: var(--font-serif);
-  font-size: 56px;
-  letter-spacing: 8px;
+  /* 320px 에서도 넘치지 않도록 가변 */
+  font-size: clamp(30px, 8vw, 56px);
+  letter-spacing: clamp(2px, 1.4vw, 8px);
   margin: 0;
   color: #2e2115;
   text-shadow: 0 2px 0 rgba(255, 255, 255, 0.4);
+  overflow-wrap: anywhere;
 }
 .site-subtitle {
   font-family: var(--font-serif);
   margin: 4px 0 0;
   color: var(--ink-soft);
-  letter-spacing: 3px;
-  font-size: 16px;
+  letter-spacing: clamp(1px, 0.6vw, 3px);
+  font-size: clamp(13px, 3.2vw, 16px);
+  overflow-wrap: anywhere;
 }
 
-/* ---------- 레이아웃 ---------- */
+/* ---------- 레이아웃 ----------
+   기본(모바일 우선): 1열 스택. 보드가 맨 위.
+   3열 레이아웃은 실제로 들어갈 폭이 확보되는 >=1240px 에서만 활성화. */
 .layout {
   display: grid;
-  grid-template-columns: 280px minmax(320px, 1fr) 300px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 22px;
   align-items: start;
   justify-items: center;
 }
-.panel { width: 100%; display: flex; flex-direction: column; gap: 16px; }
+.panel {
+  width: 100%;
+  max-width: var(--stack-max);
+  margin: 0 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
 
 /* ---------- 카드 ---------- */
 .card {
@@ -91,6 +122,8 @@ body {
   padding: 16px 18px;
   box-shadow: 0 6px 20px rgba(120, 95, 60, 0.12);
   backdrop-filter: blur(4px);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .card-title {
   font-family: var(--font-serif);
@@ -162,22 +195,29 @@ body {
 }
 
 /* ---------- 규칙 선택 ---------- */
-.rule-select { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
-.rule-label { font-size: 13px; color: var(--ink-soft); font-weight: 600; }
-.rule-options { display: flex; gap: 12px; }
-.rule-opt { font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 4px; }
+.rule-select {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 4px;
+  flex-wrap: wrap;          /* 좁은 폭에서 라벨/옵션이 줄바꿈되어도 넘치지 않음 */
+}
+.rule-label { font-size: 13px; color: var(--ink-soft); font-weight: 600; white-space: nowrap; }
+.rule-options { display: flex; gap: 12px; flex-wrap: wrap; min-width: 0; }
+.rule-opt {
+  font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 4px;
+  white-space: nowrap;
+}
 
 /* ---------- 온라인 로비 ---------- */
 .online-lobby { margin-top: 12px; }
 .color-select { margin-bottom: 12px; }
 .btn-swap { width: 100%; margin-top: 10px; }
 .lobby-actions { display: flex; flex-direction: column; gap: 10px; }
-.join-row { display: flex; gap: 6px; }
+.join-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .join-row input, .room-code {
   font-family: var(--font-sans);
 }
 .join-row input {
-  flex: 1;
+  flex: 1 1 120px;
+  min-width: 0;
   padding: 9px 10px;
   border: 1px solid var(--card-border);
   border-radius: 8px;
@@ -185,6 +225,7 @@ body {
   text-transform: uppercase;
   letter-spacing: 2px;
 }
+.join-row .btn { flex: 0 0 auto; white-space: nowrap; }
 .room-info {
   margin-top: 12px;
   padding: 12px;
@@ -192,20 +233,24 @@ body {
   border-radius: 10px;
   border: 1px dashed var(--card-border);
 }
-.room-code-row { display: flex; align-items: center; gap: 8px; }
-.room-code-label { font-size: 12px; color: var(--ink-soft); }
+.room-code-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.room-code-label { font-size: 12px; color: var(--ink-soft); white-space: nowrap; }
 .room-code {
-  font-size: 22px;
+  font-size: clamp(17px, 5vw, 22px);
   font-weight: 700;
-  letter-spacing: 4px;
+  letter-spacing: clamp(2px, 1vw, 4px);
   color: var(--accent-d);
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
+.room-code-row .btn { flex: 0 0 auto; white-space: nowrap; }
 .room-status {
   margin: 10px 0 0;
   font-size: 13px;
   color: var(--ink-soft);
   font-style: italic;
+  overflow-wrap: anywhere;
 }
 
 /* ---------- 플레이어 카드 ---------- */
@@ -225,15 +270,17 @@ body {
   border-color: var(--green);
   box-shadow: 0 0 0 2px rgba(78, 148, 79, 0.25);
 }
-.player-meta { display: flex; flex-direction: column; flex: 1; gap: 2px; }
-.player-name { font-size: 14px; font-weight: 600; }
+.player-meta { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; gap: 2px; }
+.player-name { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
 .player-tag { font-size: 11px; color: var(--accent-d); font-weight: 700; }
-.player-status { font-size: 12px; color: var(--ink-soft); }
+.player-status { font-size: 12px; color: var(--ink-soft); overflow-wrap: anywhere; }
 .player-timer {
   font-variant-numeric: tabular-nums;
   font-size: 15px;
   font-weight: 700;
   color: var(--ink);
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 /* ---------- 스톤 아이콘 ---------- */
@@ -257,24 +304,45 @@ body {
 /* ---------- 게임 정보 행 ---------- */
 .info-row {
   display: flex; align-items: center; justify-content: space-between;
+  gap: 10px;
   padding: 6px 0;
   font-size: 14px;
+  flex-wrap: wrap;
 }
-.info-label { color: var(--ink-soft); }
-.info-value { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+.info-label { color: var(--ink-soft); white-space: nowrap; }
+.info-value {
+  display: flex; align-items: center; gap: 6px; font-weight: 600;
+  min-width: 0; overflow-wrap: anywhere;
+}
 
-/* ---------- 보드 ---------- */
-.board-area { width: 100%; display: flex; justify-content: center; }
-.board-flip { perspective: 1200px; }
+/* ---------- 보드 ----------
+   핵심: 보드 크기는 뷰포트가 아니라 "부모 컨테이너" 폭에서 나온다.
+   따라서 어떤 브레이크포인트에서도 자기 그리드 열을 넘칠 수 없다. */
+.board-area {
+  width: 100%;
+  min-width: 0;
+  order: -1;              /* 스택 레이아웃에서 보드를 맨 위로 */
+  display: flex;
+  justify-content: center;
+}
+.board-flip {
+  perspective: 1200px;
+  width: 100%;
+  max-width: var(--board-max);
+  min-width: 0;
+}
 .board-flip.flipping .board { transform: rotateY(180deg); }
 .board {
-  width: var(--board-size);
-  height: var(--board-size);
+  width: 100%;
+  max-width: var(--board-max);
+  aspect-ratio: 1 / 1;
+  height: auto;
   background: var(--wood-frame);
   border: 3px solid #6b4f31;
   border-radius: 8px;
   padding: 5%;
-  box-shadow: 0 12px 34px rgba(90, 60, 30, 0.35);
+  /* 그림자가 좌우 22px 갭 안에서 끝나도록 blur 축소 (패널 위로 번지지 않음) */
+  box-shadow: 0 10px 22px rgba(90, 60, 30, 0.3);
   transition: transform 0.8s ease;
   transform-style: preserve-3d;
 }
@@ -441,10 +509,15 @@ body.theme-excel.game-othello .board-inner { background: #fff; }
   padding: 6px 8px;
   border-radius: 8px;
   font-size: 13px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .move-row.latest { background: var(--amber); }
-.move-num { color: var(--ink-soft); font-variant-numeric: tabular-nums; width: 26px; }
-.move-coord { margin-left: auto; font-weight: 700; font-variant-numeric: tabular-nums; }
+.move-num { color: var(--ink-soft); font-variant-numeric: tabular-nums; width: 26px; flex: 0 0 26px; }
+.move-coord {
+  margin-left: auto; font-weight: 700; font-variant-numeric: tabular-nums;
+  text-align: right; overflow-wrap: anywhere;
+}
 
 /* ---------- 채팅 ---------- */
 .chat-card { display: flex; flex-direction: column; }
@@ -463,6 +536,7 @@ body.theme-excel.game-othello .board-inner { background: #fff; }
   border-radius: 12px;
   font-size: 13px;
   word-break: break-word;
+  overflow-wrap: anywhere;
   line-height: 1.35;
 }
 .chat-bubble.me {
@@ -480,19 +554,24 @@ body.theme-excel.game-othello .board-inner { background: #fff; }
 }
 .chat-system {
   align-self: center;
+  max-width: 100%;
   color: var(--ink-soft);
   font-style: italic;
   font-size: 12px;
+  text-align: center;
+  overflow-wrap: anywhere;
 }
-.chat-input-row { display: flex; gap: 6px; }
+.chat-input-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .chat-input-row input {
-  flex: 1;
+  flex: 1 1 120px;
+  min-width: 0;
   padding: 8px 10px;
   border: 1px solid var(--card-border);
   border-radius: 8px;
   font-size: 13px;
   font-family: var(--font-sans);
 }
+.chat-input-row .btn { flex: 0 0 auto; white-space: nowrap; }
 
 /* ---------- 언어 선택 ---------- */
 .lang-card { display: flex; flex-direction: column; }
@@ -546,20 +625,24 @@ body.theme-excel.game-othello .board-inner { background: #fff; }
   font-size: 13px;
 }
 
-/* ---------- 테마 토글 ---------- */
+/* ---------- 테마 토글 ----------
+   문서 흐름(.toolbar) 안에 배치 → 엑셀 크롬/타이틀/카드와 절대 겹치지 않음. */
 .theme-toggle {
-  position: fixed;
-  top: 14px; right: 16px;
-  z-index: 50;
+  position: static;
   border: 1px solid var(--card-border);
   background: rgba(255,255,255,0.8);
   border-radius: 20px;
   padding: 7px 14px;
   font-size: 13px;
+  line-height: 1.3;
   cursor: pointer;
   font-family: var(--font-sans);
   color: var(--ink);
   box-shadow: 0 2px 8px rgba(120,95,60,0.18);
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ---------- 모달 ---------- */
@@ -568,16 +651,22 @@ body.theme-excel.game-othello .board-inner { background: #fff; }
   background: rgba(20, 12, 4, 0.55);
   backdrop-filter: blur(5px);
   display: flex; align-items: center; justify-content: center;
+  padding: 16px;
+  overflow-y: auto;
   z-index: 100;
 }
 .modal-card {
   background: #fff;
   border-radius: 20px;
-  padding: 34px 40px;
+  padding: clamp(20px, 5vw, 34px) clamp(18px, 6vw, 40px);
   text-align: center;
   box-shadow: 0 20px 60px rgba(0,0,0,0.35);
   animation: modal-in 0.25s ease-out;
+  width: 100%;
   max-width: 340px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  overflow-wrap: anywhere;
 }
 @keyframes modal-in {
   0% { transform: scale(0.85); opacity: 0; }
@@ -592,8 +681,8 @@ body.theme-excel.game-othello .board-inner { background: #fff; }
 .modal-stone.black { background: radial-gradient(circle at 35% 30%, #4a4a4a, #1a1a1a 72%); }
 .modal-stone.white { background: radial-gradient(circle at 35% 30%, #fff, #d4d4d4 78%); box-shadow: 0 0 0 1px #ccc inset; }
 .modal-stone.draw { background: linear-gradient(135deg, #4a4a4a 0 50%, #e4e4e4 50% 100%); }
-.modal-title { font-family: var(--font-serif); font-size: 28px; margin: 6px 0 8px; }
-.modal-message { color: var(--ink-soft); font-size: 14px; margin: 0 0 20px; }
+.modal-title { font-family: var(--font-serif); font-size: clamp(20px, 5.5vw, 28px); margin: 6px 0 8px; }
+.modal-message { color: var(--ink-soft); font-size: clamp(12px, 3.4vw, 14px); margin: 0 0 20px; }
 
 /* ---------- 토스트 ---------- */
 .toast {
@@ -605,6 +694,9 @@ body.theme-excel.game-othello .board-inner { background: #fff; }
   padding: 11px 20px;
   border-radius: 24px;
   font-size: 14px;
+  max-width: calc(100vw - 32px);
+  text-align: center;
+  overflow-wrap: anywhere;
   z-index: 120;
   animation: toast-in 0.2s ease-out;
 }
@@ -628,56 +720,155 @@ body.theme-excel {
   font-family: var(--font-sans);
   color: #333;
 }
-body.theme-excel .page { padding-top: 8px; max-width: 1180px; }
+body.theme-excel .page { padding-top: 8px; max-width: 1320px; }
 body.theme-excel .site-header { display: none; }
 
-/* 상단 크롬 표시 */
+/* --- 위장 강화: 모든 컨트롤이 리본 메뉴로 이동하므로
+   좌/우 패널·툴바·푸터는 통째로 사라지고, 화면에는 스프레드시트 격자만 남는다. --- */
+body.theme-excel .toolbar,
+body.theme-excel .panel,
+body.theme-excel .site-footer { display: none; }
+body.theme-excel .layout {
+  /* 3열(>=1240px) 규칙을 덮어써 가운데 1열로 만든다 */
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  gap: 0;
+}
+body.theme-excel .board-area { order: 0; }
+body.theme-excel .page { padding-bottom: 14px; }
+/* 패널이 사라진 만큼 격자를 키운다.
+   - 정사각 유지(aspect-ratio) + 720px 상한으로 과도하게 커지지 않게
+   - 세로로도 상한을 둬서 리본~상태바까지 한 화면에 들어오게 한다
+     (상태바의 "흑돌 차례" 가 한눈에 보여야 하므로) */
+body.theme-excel {
+  --board-max: min(720px, max(280px, calc(100vh - 210px)));
+  --stack-max: 720px;
+}
+
+/* 상단 크롬 표시.
+   NOTE: 원래 position:sticky 였으나, 스크롤 시 뷰포트 상단에 붙어
+   보드/카드 위를 덮었다(겹침). "어떤 상황에서도 겹치지 않는다"는
+   요구를 만족시키기 위해 하단 크롬과 동일하게 문서 흐름으로 되돌린다.
+   (다시 고정하고 싶으면 아래 두 줄을 sticky/top:0 으로 바꾸면 된다.) */
 body.theme-excel .excel-chrome {
   display: block;
-  position: sticky;
-  top: 0;
-  z-index: 40;
+  position: static;
+  max-width: 100%;
+  overflow: hidden;   /* 자식(리본)의 가로 스크롤이 문서 스크롤을 만들지 않도록 */
 }
-body.theme-excel .excel-bottom { display: block; }
+/* 하단 크롬은 sticky 였으나, 뷰포트 하단에 고정되어 카드/보드 위를 덮었다.
+   문서 흐름의 마지막 블록으로 되돌려 어떤 폭에서도 겹치지 않게 한다. */
+body.theme-excel .excel-bottom {
+  display: block;
+  position: static;
+  max-width: 100%;
+  overflow: hidden;
+}
 
+/* --- 타이틀바: 항상 1줄, 넘치면 말줄임 --- */
 .excel-titlebar {
   background: #217346;
   color: #fff;
   display: flex;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
   padding: 5px 12px;
   font-size: 12px;
 }
-.excel-title { font-weight: 600; }
-.excel-winbtns { display: flex; gap: 8px; }
+.excel-title {
+  font-weight: 600;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.excel-winbtns { display: flex; gap: 8px; flex: 0 0 auto; }
 .win-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; opacity: 0.9; }
 .win-dot.min { background: #ffbd44; }
 .win-dot.max { background: #00ca4e; }
 .win-dot.close { background: #ff605c; }
 
+/* --- 리본: 절대 줄바꿈하지 않고 가로 스크롤 --- */
 .excel-ribbon {
   background: #f3f2f1;
   border-bottom: 1px solid #d4d4d4;
   display: flex;
+  flex-wrap: nowrap;
   gap: 4px;
   padding: 0 10px;
   font-size: 13px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;          /* Firefox */
+  -ms-overflow-style: none;       /* 구 Edge */
 }
+.excel-ribbon::-webkit-scrollbar { width: 0; height: 0; display: none; }
 .ribbon-tab {
   padding: 8px 12px;
   color: #444;
-  cursor: default;
+  cursor: pointer;
   border-bottom: 2px solid transparent;
+  flex: 0 0 auto;
+  white-space: nowrap;   /* "페이지 레이아웃" 중간 줄바꿈 방지 */
+  user-select: none;
+  -webkit-user-select: none;
 }
+.ribbon-tab:hover { background: #eaeaea; }
 .ribbon-tab.active {
   color: #217346;
   border-bottom-color: #217346;
   font-weight: 600;
   background: #fff;
 }
+.ribbon-tab.active:hover { background: #fff; }
+
+/* --- 리본 드롭다운 -------------------------------------------------
+   실제 컨트롤(카드/버튼/라디오)은 테마 진입 시 이 패널로 "이동"한다.
+   복제하지 않으므로 id/이벤트 핸들러는 그대로 유지된다.
+
+   패널은 오버레이가 아니라 리본 바로 아래의 "문서 흐름" 블록이다.
+   (실제 엑셀 리본이 펼쳐지며 시트를 아래로 미는 동작과 같다)
+   → 어떤 폭에서도 보드/카드와 겹칠 수 없다(__layoutAudit 통과). */
+.ribbon-menus { display: none; }
+body.theme-excel .ribbon-menus { display: block; }
+.ribbon-menu {
+  width: min(420px, 100%);
+  max-width: 100%;
+  background: #fff;
+  border: 1px solid #d4d4d4;
+  border-radius: 0;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.14);
+  padding: 10px 12px;
+  max-height: min(70vh, 520px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13px;
+}
+/* 패널 안의 카드는 이미 엑셀 카드 스타일을 쓰므로 그림자만 제거 */
+.ribbon-menu .card { box-shadow: none; }
+.ribbon-menu > .btn { align-self: flex-start; max-width: 100%; }
+.ribbon-menu > .theme-toggle { align-self: flex-start; }
+.ribbon-menu > .rule-select { margin: 0; padding: 2px 2px 4px; }
+.ribbon-menu > .mode-tabs { margin: 0; }
+.ribbon-menu > .online-lobby { margin: 0; }
+.ribbon-note {
+  margin: 0;
+  padding: 6px 2px;
+  color: #888;
+  font-size: 12px;
+}
+
+/* --- 수식 입력줄: 1줄 유지, fx 내용은 말줄임 --- */
 .excel-formula {
   display: flex;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 6px;
   background: #fff;
@@ -686,37 +877,48 @@ body.theme-excel .excel-bottom { display: block; }
   font-size: 13px;
 }
 .name-box {
-  min-width: 60px;
+  flex: 0 0 auto;
+  min-width: 52px;
   border: 1px solid #d4d4d4;
   padding: 3px 8px;
   background: #fff;
   font-family: Consolas, monospace;
+  white-space: nowrap;
+  text-align: center;
 }
-.fx-label { color: #999; font-style: italic; padding: 0 4px; }
+.fx-label { color: #999; font-style: italic; padding: 0 4px; flex: 0 0 auto; }
 .fx-input {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
   border: 1px solid #d4d4d4;
   padding: 3px 8px;
   background: #fff;
   font-family: Consolas, monospace;
   color: #217346;
   min-height: 22px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* 엑셀 하단 */
 .excel-bottom {
-  position: sticky;
-  bottom: 0;
   background: #f3f2f1;
   border-top: 1px solid #d4d4d4;
-  z-index: 40;
+  margin-top: 8px;
 }
 .sheet-tabs {
   display: flex;
+  flex-wrap: nowrap;
   gap: 2px;
   padding: 4px 10px 0;
   font-size: 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
+.sheet-tabs::-webkit-scrollbar { width: 0; height: 0; display: none; }
 .sheet-tab {
   padding: 4px 14px;
   background: #e6e6e6;
@@ -724,15 +926,28 @@ body.theme-excel .excel-bottom { display: block; }
   border-bottom: none;
   border-radius: 3px 3px 0 0;
   color: #555;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 .sheet-tab.active { background: #fff; color: #217346; font-weight: 600; }
 .status-bar {
   display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 12px;
   justify-content: space-between;
   background: #217346;
   color: #fff;
   font-size: 12px;
   padding: 3px 14px;
+}
+.status-left { flex: 0 0 auto; white-space: nowrap; }
+.status-right {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* 엑셀 테마: 서체/카드 */
@@ -765,6 +980,8 @@ body.theme-excel .card > .btn-group,
 body.theme-excel .card .move-list,
 body.theme-excel .card .chat-list { margin-bottom: 12px; }
 body.theme-excel .mode-tabs { margin-top: 12px; }
+/* 버튼들이 리본 메뉴로 빠져나가 비어버린 .btn-group 이 여백을 남기지 않도록 */
+body.theme-excel .card > .btn-group { margin-top: 0; margin-bottom: 0; }
 
 body.theme-excel .btn {
   background: #f3f2f1;
@@ -774,6 +991,7 @@ body.theme-excel .btn {
   font-weight: 500;
 }
 body.theme-excel .btn:hover { background: #e6e6e6; filter: none; }
+body.theme-excel .mode-tabs { background: #e6e6e6; border-radius: 2px; }
 body.theme-excel .mode-tab.active { background: #fff; box-shadow: none; border: 1px solid #d4d4d4; border-radius: 2px; }
 body.theme-excel .card-title { border-radius: 0; }
 
@@ -820,11 +1038,14 @@ body.theme-excel .excel-headers .row-head {
   position: absolute;
   background: #e6e6e6;
   border: 1px solid #d4d4d4;
-  font-size: 10px;
+  /* 보드가 줄어들면 헤더 글자도 함께 줄어든다 (셀 밖으로 삐져나오지 않음) */
+  font-size: var(--excel-head-fs, 10px);
+  line-height: 1;
   color: #555;
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
   box-sizing: border-box;
 }
 body.theme-excel .board-cells .grid-cell {
@@ -861,12 +1082,87 @@ body.theme-excel .move-row.latest { background: #d9ead3; }
 body.theme-excel .chat-bubble.me { background: #217346; border-radius: 4px; }
 body.theme-excel .chat-bubble.them { border-radius: 4px; }
 
-/* ---------- 반응형 ---------- */
-@media (max-width: 1199px) {
+/* ============================================================
+   반응형 브레이크포인트 사다리
+   ------------------------------------------------------------
+   기본(모바일 우선)  : 1열 스택 (보드 → 왼쪽 패널 → 오른쪽 패널)
+   >= 1240px (WIDE)  : 3열 (왼쪽 280 / 보드 / 오른쪽 300)
+   <=  900px (M)     : 페이지 여백/갭 축소
+   <=  640px (S)     : 엑셀 상태바 우측 요약 숨김, 리본 축소
+   <=  560px (XS)    : 여백 최소화, 타이틀/카드 축소
+   <=  380px (XXS)   : 엑셀 크롬 최소화
+   보드 크기는 어떤 구간에서도 --board-max 를 상한으로 하는
+   "컨테이너 100%" 이므로 별도 계산이 필요 없다.
+   ============================================================ */
+
+/* ---------- WIDE: 3열 ---------- */
+@media (min-width: 1240px) {
   .layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: 280px minmax(0, 1fr) 300px;
+    gap: 22px;
   }
-  .panel { max-width: 640px; margin: 0 auto; }
-  .board-area { order: -1; }
-  :root { --board-size: min(90vw, 520px); }
+  .panel { max-width: none; margin: 0; }
+  .board-area { order: 0; }
+  .page { padding-top: 18px; }
+}
+
+/* ---------- MEDIUM ---------- */
+@media (max-width: 900px) {
+  :root { --page-pad-x: 16px; }
+  .layout { gap: 18px; }
+  .site-header { margin-bottom: 16px; }
+}
+
+/* ---------- SMALL ---------- */
+@media (max-width: 640px) {
+  .excel-ribbon { font-size: 12px; padding: 0 6px; }
+  .ribbon-tab { padding: 7px 9px; }
+  .sheet-tab { padding: 4px 10px; }
+  /* 좁은 폭에서 "준비" 와 충돌하지 않도록 우측 요약을 숨긴다 */
+  .status-right { display: none; }
+  .status-bar { justify-content: flex-start; }
+  .move-list { max-height: 240px; }
+  .chat-list { height: 170px; }
+}
+
+/* ---------- EXTRA SMALL ---------- */
+@media (max-width: 560px) {
+  :root {
+    --page-pad-x: 12px;
+    --excel-head-fs: 9px;
+  }
+  .page { padding-top: 10px; padding-bottom: 26px; }
+  .toolbar { margin-bottom: 8px; min-height: 30px; }
+  .theme-toggle { padding: 6px 11px; font-size: 12px; }
+  .site-header { margin-bottom: 14px; }
+  .layout { gap: 16px; }
+  .card { padding: 13px 13px; border-radius: 13px; }
+  .card-title { font-size: 15px; margin-bottom: 10px; }
+  .btn { padding: 9px 12px; font-size: 13px; }
+  .mode-tab { font-size: 12px; padding: 8px 4px; }
+  .excel-titlebar { padding: 4px 8px; font-size: 11px; }
+  .excel-formula { padding: 3px 6px; font-size: 12px; }
+  .status-bar { padding: 3px 10px; }
+  .sheet-tabs { padding: 4px 6px 0; }
+  body.theme-excel .mode-card > *:not(.card-title),
+  body.theme-excel .card > *:not(.card-title) { margin-left: 8px; margin-right: 8px; }
+  body.theme-excel .card-title { padding: 6px 8px; }
+  .ribbon-menu { padding: 8px; gap: 8px; }
+  .site-footer { font-size: 12px; margin-top: 22px; }
+}
+
+/* ---------- XXS ---------- */
+@media (max-width: 380px) {
+  :root { --excel-head-fs: 8px; }
+  .excel-ribbon { font-size: 11px; }
+  .ribbon-tab { padding: 6px 7px; }
+  .name-box { min-width: 44px; padding: 3px 5px; }
+  .theme-toggle { padding: 6px 9px; font-size: 11px; }
+  .move-num { width: 22px; flex-basis: 22px; }
+}
+
+/* ---------- 모션 최소화 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .board { transition: none; }
+  .stone, .disc.flip { animation: none; }
 }

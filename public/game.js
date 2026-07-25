@@ -412,8 +412,9 @@
     // 돌 바꾸기 버튼 (온라인 && 시작됨 && 착수 전 && 진행 중)
     updateSwapButton();
 
-    // 엑셀 수식바
+    // 엑셀 수식바 / 상태바
     updateExcelFormula();
+    updateExcelStatusBar();
   }
 
   function updateSwapButton() {
@@ -427,6 +428,34 @@
     Array.prototype.slice.call(document.querySelectorAll('input[name="myColor"]')).forEach(function (r) {
       r.disabled = disabled;
     });
+  }
+
+  // 엑셀 상태바(하단): 게임 상태/차례를 "평범한 엑셀 상태바 텍스트"로 노출
+  function updateExcelStatusBar() {
+    var left = $('statusLeft'), right = $('statusRight');
+    if (!left || !right) return;
+    var txt;
+    if (state.gameOver) {
+      if (state.winner === 0) txt = '무승부';
+      else if (state.winner === BLACK) txt = '흑돌 승리';
+      else if (state.winner === WHITE) txt = '백돌 승리';
+      else txt = '준비';
+    } else if (state.online && !state.started) {
+      txt = '준비';
+    } else {
+      txt = (state.turn === BLACK ? '흑돌' : '백돌') + ' 차례';
+    }
+    left.textContent = txt;
+
+    var NB = '\u00a0';   // NBSP (엑셀 상태바 간격)
+    if (state.game === 'othello') {
+      var c = state.othelloCounts || { black: 0, white: 0 };
+      right.textContent = '흑: ' + c.black + NB + NB + '백: ' + c.white +
+        NB + NB + NB + NB + '100%';
+    } else {
+      right.textContent = '합계: 0' + NB + NB + '평균: 0' + NB + NB +
+        '개수: ' + state.moves.length + NB + NB + NB + NB + '100%';
+    }
   }
 
   function updateExcelFormula() {
@@ -916,6 +945,7 @@
     if (sub) sub.textContent = '온라인 2인용 대국';
     document.title = (state.game === 'othello' ? '오델로' : '오목') + ' · 온라인 2인용 대국';
     applyGameUI();
+    refreshRibbonMenu();   // 엑셀 테마: 규칙 행(수식 탭) 표시 여부가 바뀜
   }
 
   // 게임 전환 (로컬): 레이아웃 적용 후 현재 판 리셋
@@ -959,6 +989,7 @@
     applyRuleUI();
     applyGameUI();
     resetGameState();
+    refreshRibbonMenu();   // 엑셀 테마: 열려 있는 "데이터" 패널 내용이 바뀜
   }
 
   function resetLobbyActions() {
@@ -1266,13 +1297,218 @@
   }
 
   // ============================================================
+  // 엑셀 리본 메뉴 (테마 위장)
+  // ------------------------------------------------------------
+  // 엑셀 테마에서는 좌/우 패널을 통째로 감추고, 그 안에 있던 "진짜" 컨트롤
+  // 노드를 리본 탭 드롭다운으로 **물리적으로 이동**시킨다.
+  //   - 복제(clone) 금지: id 중복 / 핸들러 이중 발화를 만들지 않는다.
+  //   - 이동 전에 {노드, 원래 부모, 원래 다음 형제}를 문서 순서대로 기록해 두고,
+  //     기본 테마로 돌아올 때 역순으로 insertBefore 하여 원래 구조를 정확히 복원한다.
+  //     (역순 복원이면 "다음 형제"도 이미 제자리에 있으므로 순서가 어긋나지 않는다.)
+  // ============================================================
+  var RIBBON_MENUS = [
+    // key,  탭 라벨(마크업의 data-menu 와 매칭), 그 탭에 들어갈 컨트롤(표시 순서)
+    { key: 'file',    items: ['btnReset', 'langCard'] },
+    { key: 'home',    items: [] },   // 홈: 기본 활성 탭 (아무것도 열지 않음)
+    { key: 'insert',  items: ['gameSelectRow', 'btnNewGame'] },
+    { key: 'layout',  items: ['themeToggle'] },
+    { key: 'formula', items: ['ruleRow'] },
+    { key: 'data',    items: ['modeTabs', 'onlineLobby', 'chatCard'] },
+    { key: 'review',  items: ['recordCard', 'btnUndo'] },
+    { key: 'view',    items: ['playerInfoCard', 'gameInfoCard'] }
+  ];
+
+  var ribbon = { built: false, moved: false, open: null, records: [] };
+
+  function ribbonTabs() {
+    return Array.prototype.slice.call(document.querySelectorAll('.ribbon-tab'));
+  }
+  function ribbonTab(key) {
+    return document.querySelector('.ribbon-tab[data-menu="' + key + '"]');
+  }
+  function ribbonPanel(key) {
+    return document.getElementById('ribbonMenu-' + key);
+  }
+  // 클릭 지점이 리본 탭/드롭다운 내부인지 (Element.closest 대체)
+  function inAnyRibbonUI(node) {
+    while (node && node.nodeType === 1) {
+      if (node.classList &&
+          (node.classList.contains('ribbon-menu') || node.classList.contains('ribbon-tab'))) {
+        return true;
+      }
+      node = node.parentNode;
+    }
+    return false;
+  }
+
+  function buildRibbonMenus() {
+    if (ribbon.built) return;
+    var host = $('ribbonMenus');
+    if (!host) return;
+    RIBBON_MENUS.forEach(function (m) {
+      if (!m.items.length) return;          // 홈은 패널이 없다
+      var p = document.createElement('div');
+      p.className = 'ribbon-menu';
+      p.id = 'ribbonMenu-' + m.key;
+      p.setAttribute('data-menu', m.key);
+      p.hidden = true;
+      var note = document.createElement('p');
+      note.className = 'ribbon-note';
+      note.textContent = '표시할 항목이 없습니다.';
+      note.hidden = true;
+      p.appendChild(note);                  // 이동된 노드는 항상 note 앞에 삽입
+      host.appendChild(p);
+    });
+    ribbonTabs().forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        var key = tab.getAttribute('data-menu');
+        setRibbonMenu(ribbon.open === key ? null : key);
+      });
+      tab.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+          e.preventDefault();
+          var key = tab.getAttribute('data-menu');
+          setRibbonMenu(ribbon.open === key ? null : key);
+        }
+      });
+    });
+    // 바깥 클릭 / Escape 로 닫기
+    document.addEventListener('click', function (e) {
+      if (!ribbon.open) return;
+      if (inAnyRibbonUI(e.target)) return;
+      setRibbonMenu(null);
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && ribbon.open) setRibbonMenu(null);
+    });
+    // 리본이 가로 스크롤되면 탭 위치가 달라지므로 패널도 따라 움직인다
+    var rb = document.querySelector('.excel-ribbon');
+    if (rb) {
+      rb.addEventListener('scroll', function () {
+        if (ribbon.open) positionRibbonMenu(ribbon.open);
+      });
+    }
+    ribbon.built = true;
+  }
+
+  // 열려 있는 패널의 내용/폭이 바뀌었을 때 (모드 전환, 게임 전환, 리사이즈 등)
+  function refreshRibbonMenu() {
+    if (!ribbon || !ribbon.open) return;
+    updateRibbonNote(ribbon.open);
+    positionRibbonMenu(ribbon.open);
+  }
+
+  // 열려 있는 패널을 클릭한 탭 아래(가능하면 탭 왼쪽 기준)에 맞춘다.
+  // 패널은 문서 흐름 안에 있으므로 margin-left 만 조정하고,
+  // 오른쪽으로 넘치지 않도록 (호스트 폭 - 패널 폭) 으로 클램프한다.
+  function positionRibbonMenu(key) {
+    var host = $('ribbonMenus'), p = ribbonPanel(key), tab = ribbonTab(key);
+    if (!host || !p || !tab) return;
+    p.style.marginLeft = '0px';
+    var hostRect = host.getBoundingClientRect();
+    var pw = p.getBoundingClientRect().width;
+    var offset = tab.getBoundingClientRect().left - hostRect.left;
+    var max = Math.max(0, hostRect.width - pw);
+    var left = Math.max(0, Math.min(offset, max));
+    p.style.marginLeft = Math.round(left) + 'px';
+  }
+
+  // 패널 안에 보이는 컨트롤이 하나도 없으면 안내문을 띄운다.
+  function updateRibbonNote(key) {
+    var p = ribbonPanel(key);
+    if (!p) return;
+    var note = p.querySelector('.ribbon-note');
+    if (!note) return;
+    var visible = false;
+    Array.prototype.slice.call(p.children).forEach(function (ch) {
+      if (ch === note) return;
+      if (!ch.hidden && ch.style.display !== 'none') visible = true;
+    });
+    note.hidden = visible;
+  }
+
+  function setRibbonMenu(key) {
+    if (!ribbon.built) return;
+    if (key === 'home') key = null;
+    RIBBON_MENUS.forEach(function (m) {
+      var p = ribbonPanel(m.key);
+      if (p) p.hidden = (m.key !== key);
+    });
+    ribbonTabs().forEach(function (t) {
+      var tk = t.getAttribute('data-menu');
+      var on = key ? (tk === key) : (tk === 'home');
+      t.classList.toggle('active', on);
+      t.setAttribute('aria-expanded', (key && tk === key) ? 'true' : 'false');
+    });
+    ribbon.open = key;
+    if (key) {
+      updateRibbonNote(key);
+      positionRibbonMenu(key);
+    }
+  }
+
+  // 컨트롤 → 리본 패널로 이동
+  function moveControlsIntoRibbon() {
+    if (ribbon.moved) return;
+    buildRibbonMenus();
+    var targets = [];
+    RIBBON_MENUS.forEach(function (m) {
+      m.items.forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el && ribbonPanel(m.key)) targets.push({ el: el, menu: m.key });
+      });
+    });
+    // 복원용 기록 (문서 순서로 정렬 → 복원은 역순)
+    var records = targets.map(function (t) {
+      return { el: t.el, parent: t.el.parentNode, next: t.el.nextSibling };
+    });
+    records.sort(function (a, b) {
+      var pos = a.el.compareDocumentPosition(b.el);
+      if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+      if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+      return 0;
+    });
+    ribbon.records = records;
+    // 실제 이동 (메뉴 정의 순서 = 화면 표시 순서)
+    targets.forEach(function (t) {
+      var p = ribbonPanel(t.menu);
+      p.insertBefore(t.el, p.querySelector('.ribbon-note'));
+    });
+    ribbon.moved = true;
+    var chrome = $('excelChrome');
+    if (chrome) chrome.setAttribute('aria-hidden', 'false');
+    setRibbonMenu(null);
+  }
+
+  // 리본 패널 → 원래 자리로 복원
+  function restoreControlsFromRibbon() {
+    if (!ribbon.moved) return;
+    setRibbonMenu(null);
+    for (var i = ribbon.records.length - 1; i >= 0; i--) {
+      var r = ribbon.records[i];
+      if (!r.parent) continue;
+      // next 가 이미 다른 곳으로 옮겨졌을 가능성 방어 (역순 복원이면 발생하지 않음)
+      var next = (r.next && r.next.parentNode === r.parent) ? r.next : null;
+      r.parent.insertBefore(r.el, next);
+    }
+    ribbon.records = [];
+    ribbon.moved = false;
+    var chrome = $('excelChrome');
+    if (chrome) chrome.setAttribute('aria-hidden', 'true');
+  }
+
+  // ============================================================
   // 테마
   // ============================================================
   function applyTheme(theme) {
     state.theme = theme;
     document.body.classList.toggle('theme-excel', theme === 'excel');
-    $('themeToggle').textContent = '🎨 테마: ' + (theme === 'excel' ? '엑셀' : '기본');
+    // 엑셀 테마에서는 리본 메뉴 안에 놓이므로 이모지 없이 "엑셀스러운" 라벨을 쓴다
+    $('themeToggle').textContent = theme === 'excel' ? '테마: 엑셀' : '🎨 테마: 기본';
     localStorage.setItem('omok_theme', theme);
+    // 컨트롤 위치(패널 ↔ 리본 메뉴) 전환
+    if (theme === 'excel') moveControlsIntoRibbon();
+    else restoreControlsFromRibbon();
     // 보드 재렌더 (동일 경로)
     renderBoard();
     updateSidebar();
@@ -1301,12 +1537,154 @@
 
   // ============================================================
   // 리사이즈
+  // ------------------------------------------------------------
+  // 보드 크기는 컨테이너에서 나오므로, 창 크기가 그대로여도
+  // (채팅 카드 등장 / 테마 전환 / 게임 전환 / 폰트 로드) 보드가 바뀔 수 있다.
+  // window resize 만으로는 이런 경우를 잡지 못하므로 ResizeObserver 를 함께 사용한다.
   // ============================================================
   var resizeTimer = null;
   window.addEventListener('resize', function () {
     if (resizeTimer) clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(renderBoard, 80);
+    resizeTimer = setTimeout(function () { lastInnerW = -1; renderBoard(); }, 80);
+    refreshRibbonMenu();   // 리본 드롭다운 좌우 클램프 재계산
   });
+
+  // ── ResizeObserver: 컨테이너 기인 크기 변화 대응 ──────────
+  var lastInnerW = -1;      // 마지막으로 렌더한 boardInner 폭(px, 반올림)
+  var roScheduled = false;  // rAF 디바운스
+  if (typeof window.ResizeObserver === 'function') {
+    var ro = new window.ResizeObserver(function () {
+      if (roScheduled) return;
+      roScheduled = true;
+      window.requestAnimationFrame(function () {
+        roScheduled = false;
+        var w = Math.round(boardInner.getBoundingClientRect().width);
+        // 무한 루프 방지: 실제로 폭이 달라졌을 때만 재렌더한다.
+        // (재렌더는 boardInner 안의 절대배치 자식만 바꾸므로 boardInner 자체 크기는
+        //  변하지 않지만, 혹시 모를 되먹임을 위해 가드를 둔다.)
+        if (!w || w === lastInnerW) return;
+        lastInnerW = w;
+        renderBoard();
+      });
+    });
+    try { ro.observe(boardInner); } catch (e) { /* noop */ }
+  }
+
+  // ============================================================
+  // 레이아웃 자가 진단 (개발/검증용, UI 없음)
+  //   window.__layoutAudit() -> { vw, vh, hScroll, overlaps: [{a,b,ox,oy}] }
+  //   - 화면에 보이는 주요 블록끼리 바운딩 박스 교차를 검사
+  //   - 양 축 모두 2px 초과로 겹칠 때만 보고
+  //   - 조상/자손 관계인 쌍은 제외
+  // ============================================================
+  var AUDIT_SELECTORS = [
+    '.board', '.panel', '.card', '#themeToggle',
+    '.excel-chrome', '.excel-bottom', '.site-header',
+    '.ribbon-menu'
+  ];
+
+  function auditName(el, sel, seen) {
+    var base = sel;
+    if (el.id) base = sel + '#' + el.id;
+    else if (el.className && typeof el.className === 'string') {
+      var cls = el.className.trim().split(/\s+/).slice(0, 2).join('.');
+      if (cls) base = sel + '(' + cls + ')';
+    }
+    seen[base] = (seen[base] || 0) + 1;
+    return seen[base] > 1 ? base + '[' + (seen[base] - 1) + ']' : base;
+  }
+
+  // 스크롤/클리핑 조상(overflow != visible)에 의해 실제로 보이는 사각형.
+  // 리본 드롭다운(max-height + overflow-y:auto)처럼 잘려 있는 자식이
+  // "화면에는 안 보이는데 좌표상 아래 요소와 겹치는" 오탐을 막는다.
+  function auditRect(el) {
+    var r = el.getBoundingClientRect();
+    var box = { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+    var p = el.parentElement;
+    while (p && p !== document.documentElement) {
+      var cs = window.getComputedStyle(p);
+      if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') {
+        var pr = p.getBoundingClientRect();
+        if (cs.overflowX !== 'visible') {
+          box.left = Math.max(box.left, pr.left);
+          box.right = Math.min(box.right, pr.right);
+        }
+        if (cs.overflowY !== 'visible') {
+          box.top = Math.max(box.top, pr.top);
+          box.bottom = Math.min(box.bottom, pr.bottom);
+        }
+      }
+      p = p.parentElement;
+    }
+    box.width = box.right - box.left;
+    box.height = box.bottom - box.top;
+    return box;
+  }
+
+  function auditVisible(el) {
+    if (!el || !el.getBoundingClientRect) return false;
+    var cs = window.getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+    if (parseFloat(cs.opacity) === 0) return false;
+    var r = auditRect(el);
+    return r.width > 0 && r.height > 0;
+  }
+
+  function layoutAudit() {
+    var els = [], rects = [], names = [], seen = {};
+    AUDIT_SELECTORS.forEach(function (sel) {
+      var found = document.querySelectorAll(sel);
+      Array.prototype.slice.call(found).forEach(function (el) {
+        if (els.indexOf(el) !== -1) return;   // 중복 매칭 방지
+        if (!auditVisible(el)) return;
+        els.push(el);
+        rects.push(auditRect(el));
+        names.push(auditName(el, sel, seen));
+      });
+    });
+
+    var overlaps = [];
+    for (var i = 0; i < els.length; i++) {
+      for (var j = i + 1; j < els.length; j++) {
+        var a = els[i], b = els[j];
+        if (a.contains(b) || b.contains(a)) continue;   // 조상/자손 제외
+        var ra = rects[i], rb = rects[j];
+        var ox = Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left);
+        var oy = Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top);
+        if (ox > 2 && oy > 2) {
+          overlaps.push({
+            a: names[i], b: names[j],
+            ox: Math.round(ox * 100) / 100,
+            oy: Math.round(oy * 100) / 100
+          });
+        }
+      }
+    }
+
+    var de = document.documentElement;
+    // 열려 있는 리본 드롭다운이 좌우로 넘치지 않는지 (부가 정보)
+    var menu = null;
+    if (ribbon && ribbon.open) {
+      var mp = ribbonPanel(ribbon.open);
+      if (mp) {
+        var mr = mp.getBoundingClientRect();
+        menu = {
+          open: ribbon.open,
+          left: Math.round(mr.left),
+          right: Math.round(mr.right),
+          inView: mr.left >= -0.5 && mr.right <= window.innerWidth + 0.5
+        };
+      }
+    }
+    return {
+      vw: window.innerWidth,
+      vh: window.innerHeight,
+      hScroll: de.scrollWidth > window.innerWidth,
+      overlaps: overlaps,
+      menu: menu
+    };
+  }
+  window.__layoutAudit = layoutAudit;
 
   // ============================================================
   // 초기화
