@@ -1,5 +1,6 @@
 /* 온라인 WebSocket 흐름 검증 */
 const WebSocket = require('ws');
+const Othello = require('./public/othello.js');
 const PORT = process.env.PORT || 3457;
 const URL = 'ws://localhost:' + PORT + '/ws';
 
@@ -12,6 +13,38 @@ const wait = (ms) => new Promise(r => setTimeout(r, ms));
 function open() { return new Promise((res) => { const w = new WebSocket(URL); w.on('open', () => res(w)); }); }
 function next(ws) { return new Promise((res) => ws.once('message', (d) => res(JSON.parse(d.toString())))); }
 function send(ws, o) { ws.send(JSON.stringify(o)); }
+// 소켓의 모든 메시지를 모으는 수집기 (브로드캐스트가 유실/뒤섞이지 않게)
+function collect(ws) {
+  const arr = [];
+  ws.on('message', (d) => arr.push(JSON.parse(d.toString())));
+  return arr;
+}
+// 조건을 만족하는 메시지가 도착할 때까지 대기 (내용으로 매칭 → 타이밍 경합 없음)
+async function until(arr, pred, ms) {
+  const limit = ms || 3000;
+  const t0 = Date.now();
+  while (Date.now() - t0 < limit) {
+    const m = arr.find(pred);
+    if (m) return m;
+    await wait(10);
+  }
+  throw new Error('timeout: 기대한 메시지가 오지 않음');
+}
+const isMove = (r, c) => (m) => m.type === 'move' && m.row === r && m.col === c;
+// 오델로 방 하나를 열고 (흑=생성자, 백=참가자) 두 소켓 + 수집기를 돌려준다
+async function othelloRoom() {
+  const black = await open();
+  const bm = collect(black);
+  send(black, { type: 'create', rule: 'renju', color: 'black', game: 'othello' });
+  const created = await until(bm, (m) => m.type === 'created');
+  const white = await open();
+  const wm = collect(white);
+  send(white, { type: 'join', code: created.code });
+  await until(wm, (m) => m.type === 'start');
+  await until(bm, (m) => m.type === 'start');
+  bm.length = 0; wm.length = 0;
+  return { black, white, bm, wm, code: created.code };
+}
 
 (async () => {
   // 1. 방 생성
@@ -217,6 +250,140 @@ function send(ws, o) { ws.send(JSON.stringify(o)); }
 
   o1.close(); o2.close();
   await wait(80);
+
+  // ============================================================
+  // 15. 오델로 패스: 상대가 둘 곳이 없으면 passed 로 알리고 턴을 유지한다
+  //     수순 d3 c3 b3 b2 f5 a3 a1 c1 이후 흑은 둘 곳이 없다.
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await othelloRoom();
+    const SEQ = [[2, 3], [2, 2], [2, 1], [1, 1], [4, 5], [2, 0], [0, 0], [0, 2]];
+    let board = Othello.createBoard();
+    let last = null;
+    for (let i = 0; i < SEQ.length; i++) {
+      const mover = i % 2 === 0 ? black : white;
+      const color = i % 2 === 0 ? Othello.BLACK : Othello.WHITE;
+      send(mover, { type: 'move', row: SEQ[i][0], col: SEQ[i][1] });
+      last = await until(bm, isMove(SEQ[i][0], SEQ[i][1]));
+      await until(wm, isMove(SEQ[i][0], SEQ[i][1]));   // 양쪽 브로드캐스트 확인
+      board = Othello.applyMove(board, SEQ[i][0], SEQ[i][1], color).board;
+    }
+    assert('오델로 패스: passed 플래그', last.passed === true, { passed: last.passed });
+    assert('오델로 패스: 패스한 색 = 흑', last.passColor === 'black', last.passColor);
+    assert('오델로 패스: 턴 유지(백)', last.nextTurn === 'white', last.nextTurn);
+    assert('오델로 패스: 서버/로컬 보드 개수 일치',
+      last.counts.black === Othello.counts(board).black &&
+      last.counts.white === Othello.counts(board).white, last.counts);
+    // 패스 직후 백이 연속으로 둘 수 있어야 한다
+    const nm = Othello.legalMoves(board, Othello.WHITE)[0];
+    send(white, { type: 'move', row: nm.row, col: nm.col });
+    const after = await until(bm, isMove(nm.row, nm.col));
+    assert('오델로 패스 후 백 연속 착수', after.color === 'white', after.color);
+    black.close(); white.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 16. 오델로 종료: 끝까지 두면 over/winner/counts 가 양쪽에 브로드캐스트된다
+  //     (정책: 스캔 순서의 첫 합법수 — 결정적이라 결과가 고정된다)
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await othelloRoom();
+    let board = Othello.createBoard();
+    let turn = Othello.BLACK;
+    let over = null, guestOver = null, plies = 0;
+    while (plies < 80) {
+      const ms = Othello.legalMoves(board, turn);
+      if (!ms.length) break;              // 서버 턴과 어긋나면 중단 (아래에서 검출)
+      const mover = turn === Othello.BLACK ? black : white;
+      send(mover, { type: 'move', row: ms[0].row, col: ms[0].col });
+      const m = await until(bm, isMove(ms[0].row, ms[0].col), 5000);
+      const mo = await until(wm, isMove(ms[0].row, ms[0].col), 5000);
+      board = Othello.applyMove(board, ms[0].row, ms[0].col, turn).board;
+      plies++;
+      if (m.over) { over = m; guestOver = mo; break; }
+      turn = m.nextTurn === 'black' ? Othello.BLACK : Othello.WHITE;
+    }
+    assert('오델로 종료: 60수에 over', over !== null && plies === 60, { plies: plies, over: !!over });
+    assert('오델로 종료: 최종 집계 19:45',
+      over && over.counts.black === 19 && over.counts.white === 45, over && over.counts);
+    assert('오델로 종료: 승자 = 백(2)', over && over.winner === Othello.WHITE, over && over.winner);
+    assert('오델로 종료: nextTurn null', over && over.nextTurn === null, over && over.nextTurn);
+    assert('오델로 종료: 양쪽 동일 브로드캐스트',
+      guestOver && guestOver.over === true && guestOver.counts.white === 45, guestOver && guestOver.counts);
+    black.close(); white.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 17. 오델로 무르기: 뒤집힌 돌까지 되돌린 서버 보드를 내려준다
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await othelloRoom();
+    send(black, { type: 'move', row: 2, col: 3 });   // d3
+    await until(bm, isMove(2, 3));
+    send(black, { type: 'undoRequest' });
+    await until(wm, (m) => m.type === 'undoRequest');
+    send(white, { type: 'undoResponse', accept: true });
+    const ub = await until(bm, (m) => m.type === 'undo');
+    const uw = await until(wm, (m) => m.type === 'undo');
+    assert('오델로 undo: game 필드', ub.game === 'othello' && uw.game === 'othello', { b: ub.game, w: uw.game });
+    assert('오델로 undo: 초기 배치로 복원',
+      ub.board && ub.board[2][3] === 0 && ub.board[3][3] === Othello.WHITE &&
+      ub.board[4][4] === Othello.WHITE && ub.board[3][4] === Othello.BLACK,
+      ub.board && [ub.board[2][3], ub.board[3][3]]);
+    assert('오델로 undo: 집계 2:2', ub.counts.black === 2 && ub.counts.white === 2, ub.counts);
+    assert('오델로 undo: 무른 사람(흑) 차례', ub.turn === 'black', ub.turn);
+    // 무르기 후 같은 자리에 다시 둘 수 있어야 한다
+    wm.length = 0;
+    send(black, { type: 'move', row: 2, col: 3 });
+    const ag = await until(wm, isMove(2, 3));
+    assert('오델로 undo 후 재착수', ag.color === 'black' && ag.counts.black === 4, ag.counts);
+    black.close(); white.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 18. 오델로 돌 바꾸기(착수 전) — 색만 교대, 흑이 여전히 선착
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await othelloRoom();
+    send(black, { type: 'swapRequest' });
+    await until(wm, (m) => m.type === 'swapRequest');
+    send(white, { type: 'swapResponse', accept: true });
+    const sb = await until(bm, (m) => m.type === 'swapped');
+    const sw = await until(wm, (m) => m.type === 'swapped');
+    assert('오델로 스왑: 색 교대', sb.color === 'white' && sw.color === 'black', { b: sb.color, w: sw.color });
+    // 새 흑(=원래 참가자)이 d3 착수 성공
+    send(white, { type: 'move', row: 2, col: 3 });
+    const m = await until(bm, isMove(2, 3));
+    assert('오델로 스왑 후 새 흑 선착', m.color === 'black' && m.counts.black === 4, m.counts);
+    black.close(); white.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 19. 오델로 재대국 — 보드가 오델로 초기 배치로 리셋되고 색이 교대된다
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await othelloRoom();
+    send(black, { type: 'move', row: 2, col: 3 });
+    await until(bm, isMove(2, 3));
+    send(black, { type: 'restartRequest' });
+    await until(wm, (m) => m.type === 'restartRequest');
+    send(white, { type: 'restartResponse', accept: true });
+    const rb = await until(bm, (m) => m.type === 'restart');
+    const rw = await until(wm, (m) => m.type === 'restart');
+    assert('오델로 재대국: 색 교대', rb.color === 'white' && rw.color === 'black', { b: rb.color, w: rw.color });
+    // 새 흑(원 참가자)이 d3 두면 4:1 → 보드가 오델로 초기 배치로 리셋됐다는 뜻
+    bm.length = 0;
+    send(white, { type: 'move', row: 2, col: 3 });
+    const m = await until(bm, isMove(2, 3));
+    assert('오델로 재대국: 보드 초기화(4:1)', m.counts.black === 4 && m.counts.white === 1, m.counts);
+    assert('오델로 재대국: 오델로 방 유지', m.game === 'othello', m.game);
+    black.close(); white.close();
+    await wait(60);
+  }
 
   console.log('\n결과: ' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail === 0 ? 0 : 1);

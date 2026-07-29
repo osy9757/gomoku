@@ -1082,6 +1082,52 @@ body.theme-excel .move-row.latest { background: #d9ead3; }
 body.theme-excel .chat-bubble.me { background: #217346; border-radius: 4px; }
 body.theme-excel .chat-bubble.them { border-radius: 4px; }
 
+/* --- 엑셀 테마 토스트: 오피스 알림 스트립 -----------------------
+   기본 테마의 둥근 갈색 알약은 스프레드시트 위장에서 바로 티가 나므로,
+   오피스 알림처럼 "흰 배경 + 1px 회색 테두리 + 각진 모서리(2px) + 작은 글자"
+   로 바꾸고 상태바 바로 아래 오른쪽에 붙인다.
+   표시/숨김 계약(hidden 속성)과 1.6초 타이머는 그대로 — CSS 만 덮어쓴다.
+
+   position: fixed 가 아니라 sticky(=문서 흐름) 인 이유:
+   엑셀 테마의 뷰포트는 상단 크롬 + 격자 + 하단 크롬이 꽉 채우고 있어서
+   화면에 띄우는(fixed) 순간 반드시 무언가를 덮는다(__layoutAudit 겹침).
+   흐름에 두면 하단 크롬 아래 여백(--board-max 계산상 항상 남는 lane)에
+   들어가 아무것도 덮지 않고, 리본 드롭다운이 열려 문서가 뷰포트보다
+   길어질 때만 sticky 로 화면 하단에 붙어 계속 보인다. */
+body.theme-excel .toast {
+  position: sticky;
+  top: auto;
+  bottom: 6px;
+  left: auto;
+  right: auto;
+  transform: none;
+  width: fit-content;
+  max-width: min(320px, calc(100vw - 24px));
+  margin: 0 12px 6px auto;          /* 상태바 바로 아래, 오른쪽 정렬 */
+  background: #fff;
+  border: 1px solid #d4d4d4;
+  border-left: 3px solid #217346;   /* 엑셀 그린 액센트 */
+  border-radius: 2px;
+  color: #333;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 5px 10px 5px 9px;
+  text-align: left;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
+  animation: excel-toast-in 0.14s ease-out;
+}
+body.theme-excel .toast::before {
+  content: '\26A0';                 /* ⚠ */
+  color: #b58500;
+  margin-right: 6px;
+  font-size: 12px;
+}
+@keyframes excel-toast-in {
+  0% { opacity: 0; transform: translateY(6px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
 /* ============================================================
    반응형 브레이크포인트 사다리
    ------------------------------------------------------------

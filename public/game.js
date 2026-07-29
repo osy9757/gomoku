@@ -52,6 +52,7 @@
     myColor: null,        // 'black'|'white'
     roomCode: null,
     online: false,
+    inRoom: false,        // 온라인: 방을 만들었거나 참가한 상태(=설정 잠김)
     started: false,
     intentionalClose: false
   };
@@ -428,6 +429,19 @@
     Array.prototype.slice.call(document.querySelectorAll('input[name="myColor"]')).forEach(function (r) {
       r.disabled = disabled;
     });
+  }
+
+  // 온라인에서 게임/규칙/내 돌 선택이 잠기는 조건.
+  //  - 로비(방 생성/참가 전): 방 생성자가 종목·규칙·색을 고를 수 있어야 하므로 열려 있다.
+  //  - 방 안(생성/참가 후): 방 설정이 확정됐으므로 잠근다.
+  function roomLocked() { return state.online && state.inRoom; }
+
+  // 방 입장/퇴장에 따라 설정 컨트롤(게임/규칙/내 돌)의 잠금을 한 번에 반영
+  function setRoomLocked(locked) {
+    state.inRoom = !!locked;
+    setColorSelectDisabled(roomLocked());
+    applyGameUI();
+    applyRuleUI();
   }
 
   // 엑셀 상태바(하단): 게임 상태/차례를 "평범한 엑셀 상태바 텍스트"로 노출
@@ -899,7 +913,7 @@
   // ============================================================
   Array.prototype.slice.call(document.querySelectorAll('input[name="rule"]')).forEach(function (radio) {
     radio.addEventListener('change', function () {
-      if (state.online) return; // 온라인은 방 생성자가 결정
+      if (roomLocked()) return; // 방 안에서는 방 생성 시 정해진 규칙을 따른다
       state.rule = radio.value;
       localStorage.setItem('omok_rule', state.rule);
       renderBoard();
@@ -910,7 +924,7 @@
     var radios = document.querySelectorAll('input[name="rule"]');
     Array.prototype.slice.call(radios).forEach(function (rr) {
       rr.checked = rr.value === state.rule;
-      rr.disabled = state.online;
+      rr.disabled = roomLocked();
     });
   }
 
@@ -919,7 +933,7 @@
   // ============================================================
   Array.prototype.slice.call(document.querySelectorAll('input[name="game"]')).forEach(function (radio) {
     radio.addEventListener('change', function () {
-      if (state.online) return; // 온라인은 방 생성자가 결정
+      if (roomLocked()) return; // 방 안에서는 방 생성 시 정해진 종목을 따른다
       if (radio.value === state.game) return;
       setGame(radio.value);
     });
@@ -929,7 +943,7 @@
     var radios = document.querySelectorAll('input[name="game"]');
     Array.prototype.slice.call(radios).forEach(function (rr) {
       rr.checked = rr.value === state.game;
-      rr.disabled = state.online;
+      rr.disabled = roomLocked();
     });
   }
 
@@ -992,11 +1006,13 @@
     refreshRibbonMenu();   // 엑셀 테마: 열려 있는 "데이터" 패널 내용이 바뀜
   }
 
+  // 로비를 "대기 상태"로 되돌린다 (모드 진입 / 상대 퇴장 / 연결 끊김).
+  // 방 설정(게임·규칙·내 돌)도 다시 고를 수 있어야 한다.
   function resetLobbyActions() {
     $('btnCreateRoom').disabled = false;
     $('btnJoinRoom').disabled = false;
     $('joinCodeInput').disabled = false;
-    setColorSelectDisabled(false);
+    setRoomLocked(false);
   }
 
   // ============================================================
@@ -1023,8 +1039,13 @@
     ws.onclose = function () {
       state.connected = false;
       if (!state.intentionalClose && state.online) {
+        // 방이 사라졌으므로 로비를 다시 열어 준다 (설정 선택 포함)
+        state.started = false;
+        state.roomCode = null;
         $('roomStatusText').textContent = '연결 끊김';
         toast('서버 연결이 끊겼습니다');
+        resetLobbyActions();
+        updateSidebar();
       }
     };
     ws.onerror = function () {};
@@ -1036,6 +1057,7 @@
     state.ws = null;
     state.connected = false;
     state.started = false;
+    state.inRoom = false;
   }
 
   function wsSend(obj) {
@@ -1057,7 +1079,7 @@
         $('btnCreateRoom').disabled = true;
         $('btnJoinRoom').disabled = true;
         $('joinCodeInput').disabled = true;
-        setColorSelectDisabled(true);
+        setRoomLocked(true);
         break;
 
       case 'joined':
@@ -1072,7 +1094,7 @@
         $('btnCreateRoom').disabled = true;
         $('btnJoinRoom').disabled = true;
         $('joinCodeInput').disabled = true;
-        setColorSelectDisabled(true);
+        setRoomLocked(true);
         break;
 
       case 'start':
@@ -1167,10 +1189,14 @@
         break;
 
       case 'opponentLeft':
+        // 서버는 상대가 나가면 방을 없앤다 → 로비는 다시 대기 상태(설정 선택 가능)
         state.started = false;
+        state.roomCode = null;
         addChatSystem('상대가 퇴장했습니다.');
         toast('상대가 나갔습니다');
         $('roomStatusText').textContent = '상대가 나갔습니다. 로비로 돌아가세요.';
+        resetLobbyActions();
+        updateSidebar();
         break;
 
       case 'error':
@@ -1580,7 +1606,8 @@
   var AUDIT_SELECTORS = [
     '.board', '.panel', '.card', '#themeToggle',
     '.excel-chrome', '.excel-bottom', '.site-header',
-    '.ribbon-menu'
+    '.ribbon-menu',
+    '#toast'          // 떠 있는 동안 다른 블록을 덮지 않는지 (숨김 상태면 자동 제외)
   ];
 
   function auditName(el, sel, seen) {
