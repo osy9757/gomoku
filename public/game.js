@@ -18,6 +18,12 @@
   function newBoard() { return curMod().createBoard(); }
   function boardSize() { return state.game === 'othello' ? O.BOARD_SIZE : R.BOARD_SIZE; }
   function otherColor(c) { return c === BLACK ? WHITE : BLACK; }
+  // 게임 종류 관련 라벨/토글 (게임 바꾸기 UI 공용)
+  function normGame(g) { return g === 'othello' ? 'othello' : 'omok'; }
+  function otherGame(g) { return normGame(g) === 'othello' ? 'omok' : 'othello'; }
+  function gameName(g) { return normGame(g) === 'othello' ? '오델로' : '오목'; }
+  // 조사 처리: 오델로'로' / 오목'으로'
+  function gameNameWithRo(g) { return normGame(g) === 'othello' ? '오델로로' : '오목으로'; }
 
   // ── DOM ────────────────────────────────────────────────
   var $ = function (id) { return document.getElementById(id); };
@@ -410,7 +416,7 @@
       $('tagWhite').textContent = '';
     }
 
-    // 돌 바꾸기 버튼 (온라인 && 시작됨 && 착수 전 && 진행 중)
+    // 돌 바꾸기 / 게임 바꾸기 버튼 (온라인 && 시작됨 && 착수 전 && 진행 중)
     updateSwapButton();
 
     // 엑셀 수식바 / 상태바
@@ -418,11 +424,17 @@
     updateExcelStatusBar();
   }
 
+  // 방 안에서만 쓰는 합의형 버튼(돌 바꾸기 / 게임 바꾸기)의 표시 조건은 동일하다.
+  // 게임 바꾸기 버튼은 "바뀔 종목"을 라벨로 보여 준다.
   function updateSwapButton() {
-    var btn = $('btnSwap');
-    if (!btn) return;
     var canSwap = state.online && state.started && !state.gameOver && state.moves.length === 0;
-    btn.style.display = canSwap ? '' : 'none';
+    var btn = $('btnSwap');
+    if (btn) btn.style.display = canSwap ? '' : 'none';
+    var gbtn = $('btnGameChange');
+    if (gbtn) {
+      gbtn.style.display = canSwap ? '' : 'none';
+      gbtn.textContent = gameNameWithRo(otherGame(state.game)) + ' 바꾸기';
+    }
   }
 
   function setColorSelectDisabled(disabled) {
@@ -1168,6 +1180,29 @@
         toast('상대가 거절했습니다');
         break;
 
+      case 'gameChangeRequest': {
+        var reqGame = normGame(msg.game);
+        showConfirm('상대가 ' + gameName(reqGame) + '(으)로 게임 변경을 요청했습니다. 수락하시겠습니까?', function (ok) {
+          wsSend({ type: 'gameChangeResponse', accept: ok });
+          if (!ok) addChatSystem('게임 변경을 거절했습니다.');
+        });
+        break;
+      }
+
+      case 'gameChanged':
+        // 색은 그대로, 종목만 교체. 로컬 종목 전환과 동일한 경로(setGame)를 재사용한다.
+        // (setGame -> applyGameLayout: 보드 크기/타이틀/규칙행 + resetGameState: 판/기보/턴 리셋)
+        setGame(normGame(msg.game));
+        state.turn = msg.turn === 'white' ? WHITE : BLACK;
+        renderBoard();
+        updateSidebar();
+        addChatSystem('게임을 ' + gameName(state.game) + '(으)로 바꿨습니다.');
+        break;
+
+      case 'gameChangeRejected':
+        toast('상대가 거절했습니다');
+        break;
+
       case 'restartRequest':
         showConfirm('상대가 새 게임을 요청했습니다. 수락할까요?', function (ok) {
           wsSend({ type: 'restartResponse', accept: ok });
@@ -1257,6 +1292,16 @@
     }
     wsSend({ type: 'swapRequest' });
     toast('상대에게 돌 바꾸기를 요청했습니다');
+  });
+
+  $('btnGameChange').addEventListener('click', function () {
+    if (!state.online || !state.started) return;
+    if (state.gameOver || state.moves.length > 0) {
+      toast('이미 착수하여 게임을 바꿀 수 없습니다');
+      return;
+    }
+    wsSend({ type: 'gameChangeRequest', game: otherGame(state.game) });
+    toast('상대에게 게임 변경을 요청했습니다');
   });
 
   $('btnJoinRoom').addEventListener('click', function () {

@@ -308,6 +308,35 @@ wss.on('connection', (ws) => {
         break;
       }
 
+      // ── 게임 바꾸기(합의) ─────────────────────────────
+      // 돌 바꾸기(swap)와 동일한 요청/응답 구조. 색은 그대로 두고 종목만 바꾼다.
+      case 'gameChangeRequest': {
+        const room = rooms.get(ws.roomCode);
+        if (!room) return;
+        const game = msg.game === 'othello' ? 'othello' : (msg.game === 'omok' ? 'omok' : null);
+        if (!game) return;              // 알 수 없는 종목
+        if (game === room.game) return; // 현재와 같은 종목
+        const opp = opponentOf(room, ws);
+        if (opp) send(opp.ws, { type: 'gameChangeRequest', game: game });
+        break;
+      }
+
+      case 'gameChangeResponse': {
+        const room = rooms.get(ws.roomCode);
+        if (!room) return;
+        if (msg.accept) {
+          if (room.moves.length > 0) return; // 착수 이후 변경 거부(무시)
+          // 두 종목뿐이므로 토글. 색은 유지(흑 선착), 보드/턴/기보만 새 종목 기준으로 리셋.
+          room.game = room.game === 'othello' ? 'omok' : 'othello';
+          resetRoomBoard(room);
+          broadcast(room, { type: 'gameChanged', game: room.game, turn: 'black' });
+        } else {
+          const opp = opponentOf(room, ws);
+          if (opp) send(opp.ws, { type: 'gameChangeRejected' });
+        }
+        break;
+      }
+
       case 'restartRequest': {
         const room = rooms.get(ws.roomCode);
         if (!room) return;

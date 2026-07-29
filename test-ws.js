@@ -31,11 +31,11 @@ async function until(arr, pred, ms) {
   throw new Error('timeout: 기대한 메시지가 오지 않음');
 }
 const isMove = (r, c) => (m) => m.type === 'move' && m.row === r && m.col === c;
-// 오델로 방 하나를 열고 (흑=생성자, 백=참가자) 두 소켓 + 수집기를 돌려준다
-async function othelloRoom() {
+// 방 하나를 열고 (흑=생성자, 백=참가자) 두 소켓 + 수집기를 돌려준다
+async function room(game, rule) {
   const black = await open();
   const bm = collect(black);
-  send(black, { type: 'create', rule: 'renju', color: 'black', game: 'othello' });
+  send(black, { type: 'create', rule: rule || 'renju', color: 'black', game: game });
   const created = await until(bm, (m) => m.type === 'created');
   const white = await open();
   const wm = collect(white);
@@ -45,6 +45,9 @@ async function othelloRoom() {
   bm.length = 0; wm.length = 0;
   return { black, white, bm, wm, code: created.code };
 }
+// 오델로 방 하나를 열고 (흑=생성자, 백=참가자) 두 소켓 + 수집기를 돌려준다
+async function othelloRoom() { return room('othello'); }
+async function omokRoom(rule) { return room('omok', rule); }
 
 (async () => {
   // 1. 방 생성
@@ -381,6 +384,130 @@ async function othelloRoom() {
     const m = await until(bm, isMove(2, 3));
     assert('오델로 재대국: 보드 초기화(4:1)', m.counts.black === 4 && m.counts.white === 1, m.counts);
     assert('오델로 재대국: 오델로 방 유지', m.game === 'othello', m.game);
+    black.close(); white.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 20. 게임 바꾸기(합의): 오목 방 -> 오델로 로 전환
+  //     색은 유지, 보드는 오델로 초기 배치, 흑이 d3 착수 가능
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await omokRoom();
+    // 잘못된 값 / 현재와 같은 종목은 무시된다
+    send(black, { type: 'gameChangeRequest', game: 'chess' });
+    send(black, { type: 'gameChangeRequest', game: 'omok' });
+    await wait(80);
+    assert('게임 변경: 잘못된 game 요청 무시',
+      !wm.some((m) => m.type === 'gameChangeRequest'), wm.map((m) => m.type));
+
+    send(black, { type: 'gameChangeRequest', game: 'othello' });
+    const req = await until(wm, (m) => m.type === 'gameChangeRequest');
+    assert('게임 변경: 상대에게 요청 전달 + game 필드', req.game === 'othello', req.game);
+    assert('게임 변경: 요청자에게는 요청 미전달',
+      !bm.some((m) => m.type === 'gameChangeRequest'), bm.map((m) => m.type));
+
+    send(white, { type: 'gameChangeResponse', accept: true });
+    const gb = await until(bm, (m) => m.type === 'gameChanged');
+    const gw = await until(wm, (m) => m.type === 'gameChanged');
+    assert('게임 변경: 양쪽 gameChanged 브로드캐스트',
+      gb.game === 'othello' && gw.game === 'othello', { b: gb.game, w: gw.game });
+    assert('게임 변경: turn=black', gb.turn === 'black' && gw.turn === 'black', gb.turn);
+
+    // 색 유지 -> 원래 흑(생성자)이 그대로 흑. 오델로 d3=(2,3) 착수 & d4 뒤집힘
+    bm.length = 0; wm.length = 0;
+    send(black, { type: 'move', row: 2, col: 3 });
+    const mv = await until(wm, isMove(2, 3));
+    await until(bm, isMove(2, 3));
+    assert('게임 변경 후 오델로 착수: 색 유지(흑=생성자)', mv.color === 'black', mv.color);
+    assert('게임 변경 후 오델로 착수: game=othello + d4 flip',
+      mv.game === 'othello' && mv.flipped.length === 1 &&
+      mv.flipped[0][0] === 3 && mv.flipped[0][1] === 3, { g: mv.game, f: mv.flipped });
+    assert('게임 변경 후 오델로 착수: 집계 4:1',
+      mv.counts.black === 4 && mv.counts.white === 1, mv.counts);
+    black.close(); white.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 21. 게임 바꾸기: 착수 이후 요청/수락은 거부(no-op)
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await omokRoom();
+    send(black, { type: 'move', row: 7, col: 7 });
+    await until(bm, isMove(7, 7));
+    bm.length = 0; wm.length = 0;
+    send(black, { type: 'gameChangeRequest', game: 'othello' });
+    await until(wm, (m) => m.type === 'gameChangeRequest');
+    send(white, { type: 'gameChangeResponse', accept: true });
+    await wait(120);
+    assert('게임 변경: 착수 후 gameChanged 없음',
+      !bm.some((m) => m.type === 'gameChanged') && !wm.some((m) => m.type === 'gameChanged'),
+      bm.map((m) => m.type));
+    // 방은 여전히 오목 — 백이 정상 착수 가능
+    wm.length = 0; bm.length = 0;
+    send(white, { type: 'move', row: 7, col: 8 });
+    const mv = await until(bm, isMove(7, 8));
+    assert('게임 변경 거부 후 오목 유지', mv.color === 'white' && mv.game === undefined, mv);
+    black.close(); white.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 22. 게임 바꾸기: 거절 -> 요청자에게만 gameChangeRejected
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await omokRoom();
+    send(black, { type: 'gameChangeRequest', game: 'othello' });
+    await until(wm, (m) => m.type === 'gameChangeRequest');
+    send(white, { type: 'gameChangeResponse', accept: false });
+    const rej = await until(bm, (m) => m.type === 'gameChangeRejected');
+    assert('게임 변경 거절: 요청자 수신', !!rej);
+    assert('게임 변경 거절: 거절자에겐 미전달',
+      !wm.some((m) => m.type === 'gameChangeRejected'), wm.map((m) => m.type));
+    assert('게임 변경 거절: gameChanged 없음',
+      !bm.some((m) => m.type === 'gameChanged') && !wm.some((m) => m.type === 'gameChanged'));
+    // 여전히 오목 방 — 흑 착수 정상
+    bm.length = 0;
+    send(black, { type: 'move', row: 7, col: 7 });
+    const mv = await until(bm, isMove(7, 7));
+    assert('게임 변경 거절 후 오목 착수 정상', mv.color === 'black', mv.color);
+    black.close(); white.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 23. 게임 바꾸기: 오델로 -> 오목 전환 후에도 렌주 금수 판정이 살아있다
+  //     흑 (7,5)(7,6)(5,7)(6,7) 이후 (7,7) 은 3-3 금수
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await othelloRoom();
+    send(black, { type: 'gameChangeRequest', game: 'omok' });
+    const req = await until(wm, (m) => m.type === 'gameChangeRequest');
+    assert('게임 변경(오델로->오목): 요청 game 필드', req.game === 'omok', req.game);
+    send(white, { type: 'gameChangeResponse', accept: true });
+    const gb = await until(bm, (m) => m.type === 'gameChanged');
+    await until(wm, (m) => m.type === 'gameChanged');
+    assert('게임 변경(오델로->오목): gameChanged', gb.game === 'omok' && gb.turn === 'black', gb);
+
+    const SEQ = [[7, 5], [0, 0], [7, 6], [0, 1], [5, 7], [0, 2], [6, 7], [0, 3]];
+    for (let i = 0; i < SEQ.length; i++) {
+      const mover = i % 2 === 0 ? black : white;
+      send(mover, { type: 'move', row: SEQ[i][0], col: SEQ[i][1] });
+      await until(bm, isMove(SEQ[i][0], SEQ[i][1]));
+      await until(wm, isMove(SEQ[i][0], SEQ[i][1]));
+    }
+    bm.length = 0; wm.length = 0;
+    send(black, { type: 'move', row: 7, col: 7 });
+    const inv = await until(bm, (m) => m.type === 'invalid');
+    assert('게임 변경 후 렌주 금수(3-3) 판정 유지',
+      inv.reason === 'forbidden' && inv.ftype === 'three-three', inv);
+    assert('게임 변경 후 금수는 브로드캐스트되지 않음',
+      !wm.some((m) => m.type === 'move'), wm.map((m) => m.type));
+    // 금수가 아닌 자리는 정상 착수
+    send(black, { type: 'move', row: 10, col: 10 });
+    const ok = await until(wm, isMove(10, 10));
+    assert('게임 변경 후 정상 오목 착수', ok.color === 'black', ok.color);
     black.close(); white.close();
     await wait(60);
   }
