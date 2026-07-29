@@ -371,7 +371,6 @@ body {
   transform: translate(-50%, -50%) scale(1);
   z-index: 3;
   box-shadow: 0 3px 5px rgba(0,0,0,0.4);
-  animation: stone-in 0.18s ease-out;
 }
 .stone.black {
   background: radial-gradient(circle at 35% 30%, #4a4a4a 0%, #1a1a1a 72%);
@@ -393,6 +392,10 @@ body {
   0% { transform: translate(-50%, -50%) scale(0.1); opacity: 0.2; }
   100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
 }
+/* 진입 애니메이션은 "새로 놓인 돌"에만 준다.
+   .stone 전체에 걸면 재렌더(리사이즈/테마 전환/승리 표시)마다
+   판 위의 모든 돌이 다시 튀어나오며 깜빡인다. */
+.stone.enter { animation: stone-in 0.18s ease-out; }
 .stone.win {
   animation: stone-win 0.9s ease-in-out infinite alternate;
   z-index: 4;
@@ -448,6 +451,12 @@ body.game-othello .board { background: var(--wood-frame); }
 .disc.white {
   background: radial-gradient(circle at 38% 32%, #ffffff 0%, #d0d0d0 80%);
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(0, 0, 0, 0.06);
+}
+/* 새로 놓인 디스크만 진입 애니메이션 (기존 디스크는 재사용되므로 재생 안 됨) */
+.disc.enter { animation: disc-in 0.18s ease-out; }
+@keyframes disc-in {
+  0% { transform: translate(-50%, -50%) scale(0.1); opacity: 0.2; }
+  100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
 }
 .disc.flip { animation: disc-flip 0.4s ease; }
 @keyframes disc-flip {
@@ -1210,5 +1219,5 @@ body.theme-excel .toast::before {
 /* ---------- 모션 최소화 ---------- */
 @media (prefers-reduced-motion: reduce) {
   .board { transition: none; }
-  .stone, .disc.flip { animation: none; }
+  .stone, .stone.enter, .disc.enter, .disc.flip { animation: none; }
 }

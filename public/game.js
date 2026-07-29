@@ -228,35 +228,154 @@
     return { x: col * cell, y: row * cell, d: cell * 0.9 };
   }
 
-  function renderStones() {
+  // ── 돌/디스크 키(keyed) 기반 diff 렌더링 ────────────────
+  // 매 렌더마다 stonesLayer 를 비우고 다시 만들면, .stone 에 걸린 진입
+  // 애니메이션(stone-in)이 판 위의 모든 돌에서 다시 재생되어 화면이
+  // 통째로 깜빡인다(착수/리사이즈/테마 전환/승리 표시 전부). 그래서
+  // (row,col) 키로 기존 요소를 찾아 위치·클래스만 갱신하고,
+  // 정말로 새로 생긴 돌에만 진입 애니메이션을 준다.
+  var pieceEls = Object.create(null);    // 'r,c' -> Element
+  var pieceKind = '';                    // 'stone' | 'disc' | ''
+  var overlayEls = Object.create(null);  // 'last-dot' | 'othello-last' -> Element
+
+  function clearPieces() {
     stonesLayer.innerHTML = '';
+    pieceEls = Object.create(null);
+    overlayEls = Object.create(null);
+    pieceKind = '';
+  }
+
+  // 오목 <-> 오델로 처럼 요소 종류 자체가 바뀌면 레이어를 비우고 새로 시작
+  function usePieceKind(kind) {
+    if (pieceKind !== kind) {
+      clearPieces();
+      pieceKind = kind;
+    }
+  }
+
+  function setPieceGeom(el, g) {
+    el.style.left = g.x + 'px';
+    el.style.top = g.y + 'px';
+    el.style.width = g.d + 'px';
+    el.style.height = g.d + 'px';
+  }
+
+  // 새로 만든 요소에만 진입 애니메이션(.enter). 끝나면 클래스를 떼어
+  // 이후 클래스 변화(.win 부여/해제 등)로 다시 재생되지 않게 한다.
+  function playEnter(el) {
+    el.classList.add('enter');
+    var done = function (e) {
+      if (e && e.animationName !== 'stone-in' && e.animationName !== 'disc-in') return;
+      el.classList.remove('enter');
+      el.removeEventListener('animationend', done);
+    };
+    el.addEventListener('animationend', done);
+    // 진입 애니메이션이 아예 없는 환경(엑셀 테마 / 모션 최소화)에서는
+    // animationend 가 오지 않는다. 그대로 두면 나중에 테마를 바꾸는 순간
+    // .enter 가 살아 있어 뒤늦게 튀어나오므로, 두 프레임 뒤에 실제로
+    // 애니메이션이 도는지 확인하고 돌지 않으면 즉시 클래스를 뗀다.
+    window.requestAnimationFrame(function () {
+      window.requestAnimationFrame(function () {
+        var running = true;
+        if (typeof el.getAnimations === 'function') {
+          running = el.getAnimations().some(function (a) {
+            return a.animationName === 'stone-in' || a.animationName === 'disc-in';
+          });
+        }
+        if (!running) done();
+        else setTimeout(function () { done(); }, 600);   // animationend 유실 대비
+      });
+    });
+  }
+
+  // 이미 존재하는 요소에서 CSS 애니메이션을 다시 재생하려면
+  // 클래스 제거 → 리플로우 강제 → 재부여 순서가 필요하다.
+  function replayFlip(el) {
+    el.classList.remove('flip');
+    void el.offsetWidth;               // 리플로우 강제 (애니메이션 리셋)
+    el.classList.add('flip');
+    if (!el.__flipBound) {
+      el.__flipBound = true;
+      el.addEventListener('animationend', function (e) {
+        if (e.animationName === 'disc-flip') el.classList.remove('flip');
+      });
+    }
+  }
+
+  // live 에 없는 칸(무르기/새 게임 등으로 비워진 칸)의 요소 제거
+  function dropStalePieces(live) {
+    Object.keys(pieceEls).forEach(function (k) {
+      if (live[k]) return;
+      var el = pieceEls[k];
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+      delete pieceEls[k];
+    });
+  }
+
+  // 마지막 착수 표식(.last-dot / .othello-last)도 재사용한다.
+  function updateOverlay(cls, show, g, sized) {
+    var el = overlayEls[cls];
+    if (!show) {
+      if (el) {
+        if (el.parentNode) el.parentNode.removeChild(el);
+        delete overlayEls[cls];
+      }
+      return;
+    }
+    if (!el) {
+      el = document.createElement('div');
+      el.className = cls;
+      overlayEls[cls] = el;
+      stonesLayer.appendChild(el);
+    }
+    el.style.left = g.x + 'px';
+    el.style.top = g.y + 'px';
+    if (sized) {
+      el.style.width = g.d + 'px';
+      el.style.height = g.d + 'px';
+    }
+  }
+
+  function renderStones() {
+    usePieceKind('stone');
     var winSet = {};
     state.winStones.forEach(function (w) { winSet[w.row + ',' + w.col] = true; });
+    var live = Object.create(null);
     for (var r = 0; r < SIZE; r++) {
       for (var c = 0; c < SIZE; c++) {
         var v = state.board[r][c];
         if (v === EMPTY) continue;
+        var key = r + ',' + c;
         var g = stoneGeom(r, c);
-        var el = document.createElement('div');
-        el.className = 'stone ' + colorStr(v);
-        if (winSet[r + ',' + c]) el.className += ' win';
-        el.style.left = g.x + 'px';
-        el.style.top = g.y + 'px';
-        el.style.width = g.d + 'px';
-        el.style.height = g.d + 'px';
-        stonesLayer.appendChild(el);
+        var won = !!winSet[key];
+        var el = pieceEls[key];
+        if (!el) {
+          el = document.createElement('div');
+          el.setAttribute('data-key', key);
+          el.setAttribute('data-color', String(v));
+          el.className = 'stone ' + colorStr(v) + (won ? ' win' : '');
+          setPieceGeom(el, g);
+          pieceEls[key] = el;
+          stonesLayer.appendChild(el);
+          // 승리 돌은 기존 동작대로 승리 펄스만 재생한다
+          if (!won) playEnter(el);
+        } else {
+          if (el.getAttribute('data-color') !== String(v)) {
+            el.setAttribute('data-color', String(v));
+            el.classList.toggle('black', v === BLACK);
+            el.classList.toggle('white', v === WHITE);
+          }
+          el.classList.toggle('win', won);
+          setPieceGeom(el, g);
+        }
+        live[key] = true;
       }
     }
+    dropStalePieces(live);
     // 마지막 착수 점 (기본 테마)
-    if (state.theme !== 'excel' && state.moves.length && !state.winStones.length) {
-      var last = state.moves[state.moves.length - 1];
-      var lg = stoneGeom(last.row, last.col);
-      var dot = document.createElement('div');
-      dot.className = 'last-dot';
-      dot.style.left = lg.x + 'px';
-      dot.style.top = lg.y + 'px';
-      stonesLayer.appendChild(dot);
-    }
+    var showDot = state.theme !== 'excel' && !!state.moves.length && !state.winStones.length;
+    var last = showDot ? state.moves[state.moves.length - 1] : null;
+    updateOverlay('last-dot', !!last, last ? stoneGeom(last.row, last.col) : null, false);
   }
 
   function shouldShowForbidden() {
@@ -287,38 +406,44 @@
 
   // ── 오델로 렌더링 ─────────────────────────────────────
   function renderDiscs() {
-    stonesLayer.innerHTML = '';
+    usePieceKind('disc');
     var flipSet = {};
     (state.lastFlipped || []).forEach(function (f) { flipSet[f[0] + ',' + f[1]] = true; });
+    var live = Object.create(null);
     for (var r = 0; r < SIZE; r++) {
       for (var c = 0; c < SIZE; c++) {
         var v = state.board[r][c];
         if (v === EMPTY) continue;
+        var key = r + ',' + c;
         var g = stoneGeom(r, c);
-        var el = document.createElement('div');
-        el.className = 'disc ' + colorStr(v);
-        if (flipSet[r + ',' + c]) el.className += ' flip';
-        el.style.left = g.x + 'px';
-        el.style.top = g.y + 'px';
-        el.style.width = g.d + 'px';
-        el.style.height = g.d + 'px';
-        stonesLayer.appendChild(el);
+        var el = pieceEls[key];
+        if (!el) {
+          el = document.createElement('div');
+          el.setAttribute('data-key', key);
+          el.setAttribute('data-color', String(v));
+          el.className = 'disc ' + colorStr(v);
+          setPieceGeom(el, g);
+          pieceEls[key] = el;
+          stonesLayer.appendChild(el);
+          playEnter(el);
+        } else {
+          if (el.getAttribute('data-color') !== String(v)) {
+            el.setAttribute('data-color', String(v));
+            el.classList.toggle('black', v === BLACK);
+            el.classList.toggle('white', v === WHITE);
+            // 색이 "실제로" 바뀐 돌만 뒤집기 애니메이션.
+            // 직전 착수로 뒤집힌 칸에 한정 (무르기/서버 동기화는 즉시 반영)
+            if (flipSet[key]) replayFlip(el);
+          }
+          setPieceGeom(el, g);
+        }
+        live[key] = true;
       }
     }
+    dropStalePieces(live);
     // 마지막 착수 표식 (기본 테마)
-    if (state.theme !== 'excel') {
-      var last = lastRealMove();
-      if (last) {
-        var lg = stoneGeom(last.row, last.col);
-        var mk = document.createElement('div');
-        mk.className = 'othello-last';
-        mk.style.left = lg.x + 'px';
-        mk.style.top = lg.y + 'px';
-        mk.style.width = lg.d + 'px';
-        mk.style.height = lg.d + 'px';
-        stonesLayer.appendChild(mk);
-      }
-    }
+    var last = state.theme !== 'excel' ? lastRealMove() : null;
+    updateOverlay('othello-last', !!last, last ? stoneGeom(last.row, last.col) : null, true);
   }
 
   function shouldShowOthelloHints() {
