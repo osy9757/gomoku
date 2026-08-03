@@ -9,7 +9,8 @@
   var O = window.Othello;
   var C = window.Connect4;
   var K = window.Cards;         // 카드 공용 유틸 (덱/표기/족보)
-  var P = window.SevenPoker;    // 맞포커 엔진 (로컬 핫시트에서 직접 구동)
+  var P = window.SevenPoker;    // 맞포커/포커 엔진 (로컬 핫시트에서 직접 구동)
+  var IP = window.IndianPoker;  // 인디언포커 엔진 (공개 API 모양이 P 와 같다)
   var BLACK = R.BLACK, WHITE = R.WHITE, EMPTY = R.EMPTY; // 세 게임 공통 (1,2,0)
   // 보드는 더 이상 정사각이 아니다 (사목 6행 x 7열).
   // 행/열을 따로 들고 다닌다. 오목/오델로는 ROWS === COLS.
@@ -19,18 +20,26 @@
   var OTHELLO_DOTS = [[2, 2], [2, 6], [6, 2], [6, 6]];
 
   // 지원 종목 (순서 = 선택 UI 표시 순서)
-  var GAMES = ['omok', 'othello', 'connect4', 'matpoker', 'poker'];
+  var GAMES = ['omok', 'othello', 'connect4', 'matpoker', 'poker', 'indian'];
   var GAME_LABEL = {
     omok: '오목', othello: '오델로', connect4: '사목',
-    matpoker: '맞포커', poker: '포커'
+    matpoker: '맞포커', poker: '포커', indian: '인디언포커'
   };
   // 카드 게임: 보드 대신 카드 테이블(#cardTable)을 쓰는 종목
-  var CARD_GAMES = ['matpoker', 'poker'];
-  function isCardGame(g) { return CARD_GAMES.indexOf(g || state.game) !== -1; }
+  var CARD_GAMES = ['matpoker', 'poker', 'indian'];
   // 테이블 게임: 좌석이 2~6인인 종목 (온라인은 좌석제 방)
-  function isTableGame(g) { return (g || state.game) === 'poker'; }
-  // '게임 바꾸기'로 고를 수 있는 종목 (포커는 좌석제라 2인 방에서 못 바꾼다)
-  var CHANGEABLE_GAMES = GAMES.filter(function (g) { return g !== 'poker'; });
+  var TABLE_GAMES = ['poker', 'indian'];
+  function isCardGame(g) { return CARD_GAMES.indexOf(g || state.game) !== -1; }
+  function isTableGame(g) { return TABLE_GAMES.indexOf(g || state.game) !== -1; }
+  // 인디언포커: 마스킹이 정반대라 카드 렌더링/문구가 따로 필요하다
+  function isIndian(g) { return (g || state.game) === 'indian'; }
+  // 현재 종목의 카드 엔진 (인디언포커 ↔ 세븐포커)
+  function cardEngine(g) { return isIndian(g) ? IP : P; }
+  function PE() { return cardEngine(); }
+  // '게임 바꾸기'로 고를 수 있는 종목 (테이블 방 종목은 2인 방에서 못 바꾼다)
+  var CHANGEABLE_GAMES = GAMES.filter(function (g) {
+    return TABLE_GAMES.indexOf(g) === -1;
+  });
   var SEAT_MIN = 2, SEAT_MAX = 6, SEAT_DEFAULT = 3;
 
   // 현재 게임의 규칙 모듈
@@ -753,7 +762,7 @@
   function seatLobbyChips(i) {
     var list = state.poker.lobby;
     for (var k = 0; k < list.length; k++) if (list[k].seat === i) return list[k].chips;
-    return P.START_CHIPS;
+    return PE().START_CHIPS;
   }
 
   function updateSidebar() {
@@ -775,7 +784,7 @@
     // 타이머 / 칩 (카드 게임은 타이머 대신 칩을 보여준다)
     if (isCardGame()) {
       var pv = state.poker.view;
-      var pchips = pv ? pv.chips : [P.START_CHIPS, P.START_CHIPS];
+      var pchips = pv ? pv.chips : [PE().START_CHIPS, PE().START_CHIPS];
       $('chipsBlack').textContent = '🪙 ' + pchips[0];
       $('chipsWhite').textContent = '🪙 ' + pchips[1];
     } else {
@@ -981,7 +990,7 @@
       }
       left.textContent = ptxt;
       var PNB = ' ';
-      right.textContent = '내 칩: ' + (pv ? pv.chips[pokerMyIndex()] : P.START_CHIPS) +
+      right.textContent = '내 칩: ' + (pv ? pv.chips[pokerMyIndex()] : PE().START_CHIPS) +
         PNB + PNB + PNB + PNB + '100%';
       return;
     }
@@ -1421,7 +1430,7 @@
   }
   function appendPokerEvents(events) {
     (events || []).forEach(function (ev) {
-      var text = P.describeEvent(ev, isTableGame() ? seatNames() : ['P1', 'P2']);
+      var text = PE().describeEvent(ev, isTableGame() ? seatNames() : ['P1', 'P2']);
       if (!text) return;
       if (ev.t === 'hand') state.poker.seq = 0;
       state.poker.seq += 1;
@@ -1474,11 +1483,37 @@
     return el;
   }
 
+  // 인디언포커 카드 한 장.
+  //  · 남의 카드 = 앞면(숫자만). 10 은 살짝 강조한다.
+  //  · 내 카드 = 뒷면 '?' — 나만 내 카드를 볼 수 없다는 것이 이 게임의 전부다.
+  //    (card 가 null 이면 볼 수 없는 카드다. 뷰가 이미 가려서 보내 주므로
+  //     값이 DOM 에 들어올 방법 자체가 없다.)
+  function makeIndianCardEl(card, mine) {
+    var el = document.createElement('div');
+    var num = document.createElement('span');
+    num.className = 'ip-num';
+    var cell = document.createElement('span');
+    cell.className = 'pc-cell';        // 엑셀 테마에서만 보이는 셀 텍스트
+    if (!card) {
+      el.className = 'pcard ip back' + (mine ? ' mine' : '');
+      num.textContent = '?';
+      cell.textContent = '###';
+    } else {
+      el.className = 'pcard ip' + (card.r === IP.PENALTY_CARD ? ' ten' : '');
+      num.textContent = String(card.r);
+      cell.textContent = String(card.r);
+    }
+    el.appendChild(num);
+    el.appendChild(cell);
+    return el;
+  }
+
   function renderHandCards(host, v, idx, mine, pickable) {
     host.innerHTML = '';
     if (!v) return;
+    var indian = isIndian();
     v.hands[idx].cards.forEach(function (card, i) {
-      var el = makeCardEl(card, { mine: mine });
+      var el = indian ? makeIndianCardEl(card, mine) : makeCardEl(card, { mine: mine });
       el.setAttribute('data-idx', String(i));
       if (pickable) {
         el.classList.add('selectable');
@@ -1491,15 +1526,55 @@
   function pokerPhaseText(v) {
     if (!v) return '';
     if (v.over) return '판 종료';
+    if (isIndian()) return v.phase === 'bet' ? '베팅 (내 카드는 볼 수 없습니다)' : '';
     if (v.phase === 'discard') return '매장 (1장 버리기)';
     if (v.phase === 'open') return '오픈 (1장 공개)';
     if (v.phase === 'bet') return v.round + '라운드 베팅';
     return '';
   }
 
+  // 인디언포커: 승부는 족보가 아니라 숫자 하나다 ('10 vs 7' 형태)
+  function indianCardsText(v, winners) {
+    var cards = (v.result && v.result.cards) || [];
+    var win = [], rest = [];
+    cards.forEach(function (c, i) {
+      if (c === null || c === undefined) return;
+      if (winners.indexOf(i) !== -1) win.push(c);
+      else rest.push(c);
+    });
+    if (!win.length) return '';
+    rest.sort(function (a, b) { return b - a; });
+    return win[0] + (rest.length ? ' vs ' + rest.join(', ') : '');
+  }
+  // 팟을 실제로 받은 좌석 목록 (분배면 여러 명)
+  function pokerWinners(r) {
+    var list = [];
+    (r.payouts || []).forEach(function (amt, i) { if (amt > 0) list.push(i); });
+    if (!list.length && r.winner !== null && r.winner !== undefined) list = [r.winner];
+    return list;
+  }
+  // 벌칙 요약 ('플레이어 3 벌금 10')
+  function penaltyText(v) {
+    var ps = (v.result && v.result.penalties) || [];
+    if (!ps.length) return '';
+    return ps.map(function (x) {
+      return seatName(x.p) + ' 벌금 ' + x.amount;
+    }).join(' · ');
+  }
+
   function pokerResultText(v) {
     if (!v || !v.over || !v.result) return '';
     var r = v.result;
+    if (isIndian()) {
+      var ws = pokerWinners(r);
+      var pen = penaltyText(v);
+      var body;
+      if (r.split) body = '팟 ' + r.amount + ' 분배 (' + ws.map(seatName).join(', ') + ')';
+      else if (!ws.length) body = '판 종료';
+      else if (!r.revealed) body = seatName(ws[0]) + ' 승 (다른 참가자 다이) +' + r.amount;
+      else body = seatName(ws[0]) + ' 승 (' + indianCardsText(v, ws) + ') +' + r.amount;
+      return body + (pen ? ' · ' + pen : '');
+    }
     if (r.split) return '무승부 — 팟 ' + r.amount + ' 분배';
     var name = seatName(r.winner);
     if (!r.revealed) return name + ' 승 (상대 다이) +' + r.amount;
@@ -1596,7 +1671,7 @@
     var chips = document.createElement('span');
     chips.className = 'ct-pod-chips';
     chips.textContent = '🪙 ' +
-      (v ? v.chips[i] : (state.online ? seatLobbyChips(i) : P.START_CHIPS));
+      (v ? v.chips[i] : (state.online ? seatLobbyChips(i) : PE().START_CHIPS));
     head.appendChild(chips);
     pod.appendChild(head);
 
@@ -1630,7 +1705,7 @@
     var v = state.poker.view;
     var me = pokerMyIndex();
     var opp = me === 0 ? 1 : 0;
-    var chips = v ? v.chips : [P.START_CHIPS, P.START_CHIPS];
+    var chips = v ? v.chips : [PE().START_CHIPS, PE().START_CHIPS];
     var dealer = v ? v.dealer : 0;
     $('ctMyName').textContent = seatName(me) + (dealer === me ? ' · 딜러' : '');
     $('ctOppName').textContent = seatName(opp) + (dealer === opp ? ' · 딜러' : '');
@@ -1659,20 +1734,25 @@
     if (actor === null || !state.poker.local) { hideGate(); return; }
     hideGate();
     state.poker.viewer = actor;
-    state.poker.view = P.viewFor(state.poker.local, actor);
+    state.poker.view = PE().viewFor(state.poker.local, actor);
     renderCardTable();
     updateSidebar();
   });
 
   // ── 로컬 진행 ─────────────────────────────────────────
+  // 종목별 덱 (인디언포커는 1~10 두 벌 = 20장)
+  function localDeck() {
+    return K.shuffle(isIndian() ? IP.makeDeck() : K.makeDeck());
+  }
+
   function localStartPokerMatch() {
     pokerFresh();
     hideModal();                 // 파산 모달에서 '새 게임' 으로 들어올 수 있다
-    var deck = K.shuffle(K.makeDeck());
+    var deck = localDeck();
     var n = isTableGame() ? state.poker.count : 2;
     var chips = [];
-    for (var i = 0; i < n; i++) chips.push(P.START_CHIPS);
-    state.poker.local = P.createHand({
+    for (var i = 0; i < n; i++) chips.push(PE().START_CHIPS);
+    state.poker.local = PE().createHand({
       deckOrder: deck,
       players: n,
       chips: chips,
@@ -1686,7 +1766,7 @@
     var st = state.poker.local;
     if (!st || !st.over) return;
     if (st.matchOver) { localStartPokerMatch(); return; }
-    var n = P.nextHand(st, K.shuffle(K.makeDeck()));
+    var n = PE().nextHand(st, localDeck());
     if (n.error) { toast(n.error); return; }
     state.poker.local = n;
     state.poker.viewer = null;
@@ -1702,7 +1782,7 @@
     if (st.over) {
       state.poker.viewer = null;
       hideGate();
-      state.poker.view = P.viewFor(st, null);   // 쇼다운이면 엔진이 이미 공개 상태
+      state.poker.view = PE().viewFor(st, null);   // 쇼다운이면 엔진이 이미 공개 상태
       renderCardTable();
       updateSidebar();
       renderMoveList();
@@ -1712,12 +1792,12 @@
     var actor = pokerActor(st);
     if (actor === null) return;
     if (state.poker.viewer === actor) {
-      state.poker.view = P.viewFor(st, actor);
+      state.poker.view = PE().viewFor(st, actor);
       hideGate();
     } else {
       // 아직 확인 전 → 양쪽 히든을 모두 가린 화면 + 가리개
       state.poker.viewer = null;
-      state.poker.view = P.viewFor(st, null);
+      state.poker.view = PE().viewFor(st, null);
       showGate(actor);
     }
     renderCardTable();
@@ -1738,7 +1818,7 @@
     var st = state.poker.local;
     var actor = state.poker.viewer;
     if (!st || actor === null) return;
-    var res = P.apply(st, actor, action);
+    var res = PE().apply(st, actor, action);
     if (res.error) { toast(res.error); return; }
     state.poker.local = res.state;
     state.poker.viewer = null;      // 결정할 때마다 다시 가린다
@@ -1779,9 +1859,13 @@
         hideModal();
         return;
       }
+      // 모달은 "다음 판을 시작하기 전에" 닫는다. 새 판이 시작하자마자 끝나는
+      // 경우(앤티만으로 올인 → 액션 가능한 좌석이 1명 이하 → 즉시 쇼다운)에는
+      // localNextPokerHand() 안에서 결과 모달이 다시 열리는데, 여기서 뒤늦게
+      // hideModal() 을 부르면 그 모달을 도로 닫아 화면이 멈춘 것처럼 보인다.
+      hideModal();
       if (state.online) wsSend({ type: 'pokerAction', action: { type: 'nextHand' } });
       else localNextPokerHand();
-      hideModal();
       return;
     }
     if (state.online) {
@@ -1796,6 +1880,36 @@
     }
     if (v && v.matchOver) localStartPokerMatch();
     else localNextPokerHand();
+  }
+
+  // 인디언포커 결과 모달 ('플레이어 1 승리! (10 vs 7)')
+  function showIndianResultModal() {
+    var v = state.poker.view;
+    var r = v.result;
+    var stone = $('modalStone'), title = $('modalTitle'), msg = $('modalMessage');
+    stone.hidden = true;
+    var n = pokerSeatCount();
+    var chipsTxt = [];
+    for (var i = 0; i < n; i++) chipsTxt.push(seatName(i) + ' ' + v.chips[i]);
+    if (v.matchOver) {
+      title.textContent = '최종 우승 — ' +
+        (v.matchWinner === null ? '무승부' : seatName(v.matchWinner));
+      msg.textContent = '칩 ' + chipsTxt.join(' · ');
+      setPlayAgainLabel(state.online && !state.poker.isHost ? '방장 대기' : '새 경기');
+      $('resultModal').hidden = false;
+      return;
+    }
+    var ws = pokerWinners(r);
+    var names = ws.map(seatName).join(', ');
+    var cards = r.revealed ? indianCardsText(v, ws) : '';
+    title.textContent = ws.length > 1
+      ? '팟 분배 — ' + names + (cards ? ' (' + cards + ')' : '')
+      : (names ? names + ' 승리!' + (cards ? ' (' + cards + ')' : '') : '판 종료');
+    var pen = penaltyText(v);
+    msg.textContent = '팟 ' + r.amount + (r.revealed ? '' : ' (전원 다이 — 카드 비공개)') +
+      (pen ? ' · ' + pen : '') + ' · 칩 ' + chipsTxt.join(' · ');
+    setPlayAgainLabel('다음 판');
+    $('resultModal').hidden = false;
   }
 
   // 포커(2~6인) 결과 모달. 좌석이 여럿이라 문구/칩 요약이 다르다.
@@ -1832,6 +1946,7 @@
   function showPokerResultModal() {
     var v = state.poker.view;
     if (!v || !v.over || !v.result) return;
+    if (isIndian()) { showIndianResultModal(); return; }
     if (isTableGame()) { showPokerTableModal(); return; }
     var stone = $('modalStone'), title = $('modalTitle'), msg = $('modalMessage');
     stone.hidden = true;                 // 카드 게임에는 돌 아이콘이 없다
@@ -2135,7 +2250,9 @@
     document.body.classList.toggle('game-othello', state.game === 'othello');
     document.body.classList.toggle('game-connect4', state.game === 'connect4');
     document.body.classList.toggle('game-matpoker', state.game === 'matpoker');
-    document.body.classList.toggle('game-poker', table);
+    document.body.classList.toggle('game-poker', state.game === 'poker');
+    document.body.classList.toggle('game-indian', isIndian());
+    document.body.classList.toggle('game-table', table);
 
     // 중앙 영역 교체: 보드 ↔ 카드 테이블. 넘어가는 쪽의 DOM 은 완전히 비운다
     // (돌/셀/힌트가 남아 있으면 다음 종목 화면에 유령처럼 남는다).
@@ -2564,9 +2681,9 @@
     renderMoveList();
   }
 
-  // 포커 테이블 방 입장 (방 만들기 / 참가 공통)
+  // 테이블 방 입장 (방 만들기 / 참가 공통 — 포커 / 인디언포커)
   function enterTableRoom(msg, created) {
-    state.game = 'poker';
+    state.game = isTableGame(msg.game) ? msg.game : 'poker';
     state.roomCode = msg.code;
     state.myColor = null;
     state.started = false;
@@ -2574,7 +2691,7 @@
     state.poker.isHost = !!msg.isHost;
     state.poker.tableStarted = false;
     state.poker.lobby = [];
-    localStorage.setItem('omok_game', 'poker');
+    localStorage.setItem('omok_game', state.game);
     applyGameLayout();
     resetGameStateKeepOnline();
     $('roomInfo').hidden = false;

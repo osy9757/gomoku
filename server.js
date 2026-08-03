@@ -16,25 +16,37 @@ const Othello = require('./public/othello.js');
 const Connect4 = require('./public/connect4.js');
 const Cards = require('./public/cards.js');
 const Poker = require('./public/sevenpoker.js');
+const Indian = require('./public/indianpoker.js');
 
 // 지원 종목 (게임 생성/변경에서 공용으로 쓰는 화이트리스트)
-const GAMES = ['omok', 'othello', 'connect4', 'matpoker', 'poker'];
-// '게임 바꾸기'로 전환할 수 있는 종목 (2인 방 전용 — 포커는 테이블 방이라 제외)
-const CHANGEABLE_GAMES = GAMES.filter((g) => g !== 'poker');
+const GAMES = ['omok', 'othello', 'connect4', 'matpoker', 'poker', 'indian'];
+// 테이블 방(2~6인 좌석제) 종목
+const TABLE_GAMES = ['poker', 'indian'];
+// '게임 바꾸기'로 전환할 수 있는 종목
+// (2인 방 전용 — 테이블 방 종목은 좌석/칩 구조가 달라 제외한다)
+const CHANGEABLE_GAMES = GAMES.filter((g) => TABLE_GAMES.indexOf(g) === -1);
 function normGame(g) {
   return GAMES.indexOf(g) !== -1 ? g : null;
 }
-// 카드 게임(보드가 없는 종목 = 세븐포커 엔진을 쓰는 종목)
+// 카드 게임(보드가 없는 종목 = 카드 엔진을 쓰는 종목)
 function isCardGame(g) {
-  return g === 'matpoker' || g === 'poker';
+  return g === 'matpoker' || TABLE_GAMES.indexOf(g) !== -1;
 }
-// 테이블 방(2~6인 좌석제). 현재는 포커만.
+// 테이블 방(2~6인 좌석제)
 const TABLE_CAPACITY = 6;
 function isTableGame(g) {
-  return g === 'poker';
+  return TABLE_GAMES.indexOf(g) !== -1;
 }
 function isTableRoom(room) {
   return !!room && isTableGame(room.game);
+}
+// 종목별 카드 엔진. 인디언포커와 세븐포커는 공개 API 모양이 같아서
+// 테이블 방 코드 경로 전체를 엔진만 바꿔 끼워 그대로 쓴다.
+function cardEngine(game) {
+  return game === 'indian' ? Indian : Poker;
+}
+function roomEngine(room) {
+  return cardEngine(room && room.game);
 }
 
 // 방의 게임 종류에 맞는 규칙 모듈 반환
@@ -63,14 +75,17 @@ function seatOf(room, ws) {
 function secureRandom() {
   return crypto.randomInt(0, 0x40000000) / 0x40000000;
 }
-function shuffledDeck() {
-  return Cards.shuffle(Cards.makeDeck(), secureRandom);
+// 종목별 덱. 인디언포커는 1~10 두 벌(20장), 나머지는 표준 52장.
+function shuffledDeck(game) {
+  const base = game === 'indian' ? Indian.makeDeck() : Cards.makeDeck();
+  return Cards.shuffle(base, secureRandom);
 }
 // 새 매치(칩 1000 리셋). 방 생성/참가/게임 변경/재대국에서 호출.
 function startPokerMatch(room) {
-  room.poker = Poker.createHand({
-    deckOrder: shuffledDeck(),
-    chips: [Poker.START_CHIPS, Poker.START_CHIPS],
+  const E = roomEngine(room);
+  room.poker = E.createHand({
+    deckOrder: shuffledDeck(room.game),
+    chips: [E.START_CHIPS, E.START_CHIPS],
     dealer: 0
   });
 }
@@ -78,12 +93,13 @@ function startPokerMatch(room) {
 // events 는 전원에게 동일하게 가는 공개 로그(히든 카드 정보가 없다).
 function sendPokerState(room, events) {
   if (!room.poker) return;
+  const E = roomEngine(room);
   room.players.forEach((p) => {
     const seat = isTableRoom(room) ? p.seat : seatOfColor(p.color);
     send(p.ws, {
       type: 'pokerState',
       seat: seat,
-      view: Poker.viewFor(room.poker, seat),
+      view: E.viewFor(room.poker, seat),
       events: events || []
     });
   });
@@ -108,7 +124,7 @@ function freeSeat(room) {
 }
 function tableChips(room, seat) {
   if (room.poker && typeof room.poker.chips[seat] === 'number') return room.poker.chips[seat];
-  return Poker.START_CHIPS;
+  return roomEngine(room).START_CHIPS;
 }
 // 로비 상태 방송. 입장/퇴장/시작/매치 종료 등 모든 변화에서 호출한다.
 function sendTableLobby(room, notice) {
@@ -140,13 +156,14 @@ function tableNotice(room, text) {
 // 새 매치(칩 1000 리셋). 좌석은 0..N-1 로 정리한 뒤 첫 판을 돌린다.
 function startTableMatch(room) {
   reseatTable(room);
+  const E = roomEngine(room);
   const n = room.players.length;
   const chips = [];
-  for (let i = 0; i < n; i++) chips.push(Poker.START_CHIPS);
+  for (let i = 0; i < n; i++) chips.push(E.START_CHIPS);
   room.started = true;
-  room.poker = Poker.createHand({
+  room.poker = E.createHand({
     players: n,
-    deckOrder: shuffledDeck(),
+    deckOrder: shuffledDeck(room.game),
     chips: chips,
     dealer: 0
   });
@@ -377,11 +394,12 @@ wss.on('connection', (ws) => {
         break;
       }
 
-      // ── 카드 게임 액션 (맞포커 / 포커 공용) ─────────────
+      // ── 카드 게임 액션 (맞포커 / 포커 / 인디언포커 공용) ──
       // 모든 판정은 서버가 한다. 클라이언트는 자기 시점 뷰만 받는다.
       case 'pokerAction': {
         const room = rooms.get(ws.roomCode);
         if (!room || !isCardGame(room.game)) return;
+        const E = roomEngine(room);
         const seat = seatOf(room, ws);
         if (seat === null) return;
         const action = msg.action || {};
@@ -390,12 +408,12 @@ wss.on('connection', (ws) => {
         // '다음 판' 은 양쪽 누구나 보낼 수 있고, 이미 다음 판이 시작됐으면
         // 아무 일도 하지 않는다(멱등).
         if (action.type === 'nextHand') {
-          if (!Poker.isHandOver(room.poker)) return;
+          if (!E.isHandOver(room.poker)) return;
           if (room.poker.matchOver) {
             send(ws, { type: 'invalid', reason: 'poker', message: '매치가 종료되었습니다' });
             return;
           }
-          const nh = Poker.nextHand(room.poker, shuffledDeck());
+          const nh = E.nextHand(room.poker, shuffledDeck(room.game));
           if (nh.error) return;
           room.poker = nh;
           sendPokerState(room, room.poker.log.slice());
@@ -403,7 +421,7 @@ wss.on('connection', (ws) => {
           return;
         }
 
-        const res = Poker.apply(room.poker, seat, action);
+        const res = E.apply(room.poker, seat, action);
         if (res.error) {
           send(ws, { type: 'invalid', reason: 'poker', message: res.error });
           return;
@@ -724,7 +742,7 @@ wss.on('connection', (ws) => {
 
       // 매치 진행 중
       if (room.poker) {
-        const res = Poker.leave(room.poker, seat);
+        const res = roomEngine(room).leave(room.poker, seat);
         if (!res.error) {
           room.poker = res.state;
           sendPokerState(room, res.events);
@@ -748,12 +766,13 @@ wss.on('connection', (ws) => {
     }
 
     const opp = opponentOf(room, ws);
+    const CE = roomEngine(room);
     // 맞포커: 판이 진행 중이었다면 나간 쪽을 다이 처리해서 남은 사람이
     // 팟을 가져가게 한 뒤(정산된 뷰를 한 번 더 보낸다) 퇴장을 알린다.
-    if (opp && isCardGame(room.game) && room.poker && !Poker.isHandOver(room.poker)) {
+    if (opp && isCardGame(room.game) && room.poker && !CE.isHandOver(room.poker)) {
       const leaver = seatOf(room, ws);
       if (leaver !== null) {
-        const res = Poker.apply(room.poker, leaver, { type: 'die' });
+        const res = CE.apply(room.poker, leaver, { type: 'die' });
         if (!res.error) {
           room.poker = res.state;
         } else {
@@ -774,7 +793,7 @@ wss.on('connection', (ws) => {
         send(opp.ws, {
           type: 'pokerState',
           seat: seat,
-          view: Poker.viewFor(room.poker, seat),
+          view: CE.viewFor(room.poker, seat),
           events: [room.poker.log[room.poker.log.length - 1]]
         });
       }

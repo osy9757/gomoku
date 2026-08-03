@@ -1064,5 +1064,354 @@ function open3(chips, dealer, deck) {
     Poker.createHand({ players: 1 }).players === 2);
 })();
 
+// ============================================================
+// 인디언포커(2~6인) 엔진 검증 — public/indianpoker.js
+//   덱: 1~10 두 벌 = 20장 (무늬 없음)
+//   각자 1장 · 자기 카드만 못 본다 (viewFor 마스킹이 포커와 정반대)
+//   베팅 1라운드 (선 = 딜러 왼쪽) → 하이카드 승부
+//   10 을 들고 다이하면 벌금 10 (판이 끝날 때 팟에 추가)
+// ============================================================
+const Indian = require('./public/indianpoker.js');
+
+function ic(v) { return { r: v }; }
+function ideck(vals) { return vals.map(ic); }
+// 딜러를 마지막 좌석으로 두면 배분 순서가 좌석 순서(0,1,2..)와 같아진다
+function ideal(vals, chips, dealer) {
+  const n = chips ? chips.length : vals.length;
+  return Indian.createHand({
+    deckOrder: ideck(vals), players: n, chips: chips,
+    dealer: dealer === undefined ? n - 1 : dealer
+  });
+}
+function istep(st, p, action) {
+  const r = Indian.apply(st, p, action);
+  if (r.error) throw new Error('불법 액션(' + JSON.stringify(action) + '): ' + r.error);
+  return r.state;
+}
+function iopt(st, p, type) {
+  return Indian.actionOptions(st, p).find(function (o) { return o.type === type; });
+}
+function cardVals(v) {
+  return v.hands.map(function (h) { return h.cards[0] ? h.cards[0].r : null; });
+}
+
+// (i-a) 덱 / 배분 / 앤티 / 선(先)
+(function () {
+  const d = Indian.makeDeck();
+  const cnt = {};
+  d.forEach(function (c) { cnt[c.r] = (cnt[c.r] || 0) + 1; });
+  assert('(i-a1) 덱 20장 = 1~10 두 벌',
+    d.length === 20 &&
+    Object.keys(cnt).length === 10 &&
+    Object.keys(cnt).every(function (k) { return cnt[k] === 2 && k >= 1 && k <= 10; }));
+  assert('(i-a2) 카드에 무늬가 없다', d.every(function (c) { return c.s === undefined; }));
+
+  const s = ideal([10, 7, 3]);   // dealer=2 → 배분 P0,P1,P2
+  assert('(i-a3) 3인 앤티 10씩 → 팟 30 / 칩 990',
+    s.pot === 30 && s.chips.join(',') === '990,990,990');
+  assert('(i-a4) 각자 정확히 1장씩 (덱 순서대로)',
+    s.hands.every(function (h) { return h.cards.length === 1; }) &&
+    cardVals(s).join(',') === '10,7,3' && s.dealtCount === 3);
+  assert('(i-a5) 배분 직후 바로 베팅 1라운드', s.phase === 'bet' && s.round === 1);
+  assert('(i-a6) 선은 딜러 왼쪽(시계방향 다음) 좌석', s.dealer === 2 && s.toAct === 0);
+  const s2 = ideal([10, 7, 3], null, 0);
+  assert('(i-a7) 딜러가 0 이면 선은 1 · 배분도 딜러 다음부터',
+    s2.toAct === 1 && cardVals(s2).join(',') === '3,10,7');
+  assert('(i-a8) 인원 범위 클램프 (2~6)',
+    Indian.createHand({ players: 9 }).players === 6 &&
+    Indian.createHand({ players: 1 }).players === 2);
+  assert('(i-a9) 차례가 아닌 좌석의 액션은 거부', !!Indian.apply(s, 1, { type: 'check' }).error);
+  assert('(i-a10) 판 진행 중 nextHand 불가', !!Indian.nextHand(s, ideck([1, 2, 3])).error);
+})();
+
+// (i-b) viewFor — 포커와 정반대 마스킹 (내 카드만 안 보인다)
+(function () {
+  const s = ideal([10, 7, 3]);
+  const v0 = Indian.viewFor(s, 0);
+  const v1 = Indian.viewFor(s, 1);
+  assert('(i-b1) 내 카드는 null',
+    v0.hands[0].cards[0] === null && v1.hands[1].cards[0] === null);
+  assert('(i-b2) 다른 사람 카드는 전부 보인다',
+    v0.hands[1].cards[0].r === 7 && v0.hands[2].cards[0].r === 3 &&
+    v1.hands[0].cards[0].r === 10 && v1.hands[2].cards[0].r === 3);
+  assert('(i-b3) me / 액션 목록 / 덱 비공개',
+    v0.me === 0 && v0.deck === undefined && v0.deckLeft === 0 &&
+    v0.options.length > 0 && v1.options.length > 0);
+  const full = Indian.createHand({ deckOrder: Indian.makeDeck(), players: 3, dealer: 2 });
+  assert('(i-b3b) 20장 덱에서 3장만 쓴다', Indian.viewFor(full, 0).deckLeft === 17);
+  const vn = Indian.viewFor(s, null);
+  assert('(i-b4) viewFor(null) 은 전원 카드를 가린다 (핫시트 가리개)',
+    vn.me === null && vn.hands.every(function (h) { return h.cards[0] === null; }) &&
+    vn.options.length === 0);
+  assert('(i-b5) viewFor 는 원본을 건드리지 않는다',
+    s.hands[0].cards[0].r === 10 && s.deck.length === 3);
+  assert('(i-b6) 판 종료 전 로그에는 카드 값이 절대 담기지 않는다',
+    s.log.every(function (e) {
+      return e.card === undefined && e.cards === undefined && e.value === undefined;
+    }));
+})();
+
+// (i-c) 베팅 산식 (세븐포커와 동일한 헬퍼를 공유한다)
+(function () {
+  let s = ideal([10, 7, 3]);
+  assert('(i-c1) 삥 = 앤티(10) / 체크 가능 / 콜 불가',
+    iopt(s, 0, 'bbing').amount === 10 && iopt(s, 0, 'check').enabled === true &&
+    iopt(s, 0, 'call').enabled === false && iopt(s, 0, 'ttadang').enabled === false);
+  assert('(i-c2) 하프(선베팅) = 팟의 절반 (floor(30/2)=15)', iopt(s, 0, 'half').amount === 15);
+  s = istep(s, 0, { type: 'bbing' });
+  assert('(i-c3) 삥 후 팟 40 / 다음 차례는 시계방향',
+    s.pot === 40 && s.toAct === 1 && s.chips[0] === 980);
+  assert('(i-c4) 하프 = 콜 + 팟의 절반 (10 + 20 = 30)', iopt(s, 1, 'half').amount === 30);
+  assert('(i-c5) 따당 = 콜 + 직전 레이즈 x2 (10 + 20 = 30)', iopt(s, 1, 'ttadang').amount === 30);
+  s = istep(s, 1, { type: 'half' });
+  assert('(i-c6) 하프 후 팟 70 / 칩 960', s.pot === 70 && s.chips[1] === 960);
+  assert('(i-c7) 따당 = 콜(30) + 직전 레이즈(20) x2 = 70', iopt(s, 2, 'ttadang').amount === 70);
+  s = istep(s, 2, { type: 'ttadang' });      // 3회째 레이즈
+  s = istep(s, 0, { type: 'ttadang' });      // 4회째 레이즈
+  assert('(i-c8) 레이즈 4회 상한 → 추가 레이즈 불가 / 콜은 가능',
+    s.raises === 4 && iopt(s, 1, 'half').enabled === false &&
+    iopt(s, 1, 'ttadang').enabled === false && iopt(s, 1, 'bbing').enabled === false &&
+    iopt(s, 1, 'call').enabled === true);
+  assert('(i-c9) 상한 초과 레이즈는 에러', !!Indian.apply(s, 1, { type: 'half' }).error);
+})();
+
+// (i-d) 다이가 이어져 1명만 남으면 카드를 공개하지 않는다
+(function () {
+  let s = ideal([10, 7, 3]);
+  s = istep(s, 0, { type: 'check' });
+  s = istep(s, 1, { type: 'die' });
+  assert('(i-d1) 한 명이 다이해도 두 명 남으면 계속',
+    s.over === false && s.folded[1] === true && s.toAct === 2);
+  s = istep(s, 2, { type: 'die' });
+  assert('(i-d2) 1명만 남으면 즉시 종료 + 팟 전액 획득',
+    s.over === true && s.result.winner === 0 && s.result.amount === 30 &&
+    s.chips.join(',') === '1020,990,990');
+  assert('(i-d3) 다이 종료는 카드를 공개하지 않는다 (승자도 자기 카드를 모른다)',
+    s.revealed === false && s.result.revealed === false &&
+    Indian.viewFor(s, 0).hands[0].cards[0] === null &&
+    s.result.cards.every(function (c) { return c === null; }));
+  assert('(i-d4) 다이 종료 후에도 남의 카드는 그대로 보인다',
+    Indian.viewFor(s, 0).hands[1].cards[0].r === 7);
+})();
+
+// (i-e) 쇼다운: 높은 숫자가 이긴다
+(function () {
+  let s = ideal([3, 10, 7]);
+  s = istep(s, 0, { type: 'check' });
+  s = istep(s, 1, { type: 'check' });
+  s = istep(s, 2, { type: 'check' });
+  assert('(i-e1) 전원 체크 → 쇼다운',
+    Indian.isHandOver(s) === true && s.phase === 'showdown' && s.revealed === true);
+  assert('(i-e2) 가장 높은 카드(10)를 든 P1 이 팟 30 획득',
+    s.result.winner === 1 && s.result.split === false && s.result.amount === 30 &&
+    s.chips.join(',') === '990,1020,990');
+  assert('(i-e3) 쇼다운 결과에 모든 카드 값이 담긴다',
+    s.result.cards.join(',') === '3,10,7' && s.result.revealed === true);
+  assert('(i-e4) 쇼다운 후에는 자기 카드도 공개된다',
+    Indian.viewFor(s, 1).hands[1].cards[0].r === 10 &&
+    Indian.viewFor(s, 0).hands[0].cards[0].r === 3);
+  assert('(i-e5) 칩 총량 보존', s.chips.reduce(function (a, b) { return a + b; }, 0) === 3000);
+})();
+
+// (i-f) 동점 분배 + 나머지 칩은 딜러 다음 좌석부터
+(function () {
+  // P2 는 칩 5 뿐이라 앤티에서 올인 → 팟 25 (홀수 층이 생긴다)
+  let s = ideal([9, 9, 3], [1000, 1000, 5], 2);
+  assert('(i-f1) 앤티가 스택을 넘으면 남은 칩 전부(올인)',
+    s.pot === 25 && s.chips.join(',') === '990,990,0' && s.allIn[2] === true);
+  s = istep(s, 0, { type: 'check' });
+  s = istep(s, 1, { type: 'check' });
+  assert('(i-f2) 동점(9,9) → 분배 · 사이드 팟 층별 정산',
+    s.over === true && s.result.split === true && s.result.winner === null &&
+    s.result.pots.length === 2 &&
+    s.result.pots[0].amount === 15 && s.result.pots[0].eligible.join(',') === '0,1,2' &&
+    s.result.pots[1].amount === 10 && s.result.pots[1].eligible.join(',') === '0,1');
+  assert('(i-f3) 나머지 1칩은 딜러(2) 다음 좌석인 P0 에게',
+    s.result.payouts.join(',') === '13,12,0' && s.chips.join(',') === '1003,1002,0');
+
+  // 딜러를 0 으로 두면 나머지 칩은 P1 이 가져간다
+  let t = ideal([9, 3, 9], [1000, 1000, 5], 0);   // 배분 순서 P1,P2,P0
+  assert('(i-f4) 딜러 0: 배분 순서가 P1 부터', cardVals(t).join(',') === '9,9,3');
+  t = istep(t, 1, { type: 'check' });
+  t = istep(t, 0, { type: 'check' });     // P2 는 올인이라 액션 순서에서 빠진다
+  assert('(i-f5) 나머지 1칩은 딜러(0) 다음 좌석인 P1 에게',
+    t.result.split === true && t.result.payouts.join(',') === '12,13,0');
+})();
+
+// (i-g) 10 폴드 벌칙 — 10 을 들고 다이하면 벌금 10 (팟에 추가된 뒤 지급)
+(function () {
+  let s = ideal([10, 7, 3]);
+  s = istep(s, 0, { type: 'die' });     // 10 을 들고 다이!
+  s = istep(s, 1, { type: 'check' });
+  s = istep(s, 2, { type: 'check' });
+  assert('(i-g1) 벌칙이 판 종료 시점에 적용된다',
+    s.over === true && s.result.penalties.length === 1 &&
+    s.result.penalties[0].p === 0 && s.result.penalties[0].amount === 10);
+  assert('(i-g2) 벌금 10 이 팟에 더해진 뒤 승자에게 지급 (30 + 10 = 40)',
+    s.result.amount === 40 && s.result.winner === 1 &&
+    s.chips.join(',') === '980,1030,990');
+  assert('(i-g3) 벌칙 로그 문구',
+    Indian.describeEvent(s.log.filter(function (e) { return e.t === 'penalty'; })[0]) ===
+    'P1, 10을 들고 다이! 벌금 10');
+  assert('(i-g4) 벌칙 대상은 자기 카드를 알게 된다 (그 외에는 비공개 유지)',
+    Indian.viewFor(s, 0).hands[0].cards[0].r === 10);
+  assert('(i-g5) 칩 총량 보존', s.chips.reduce(function (a, b) { return a + b; }, 0) === 3000);
+
+  // 스택이 모자라면 남은 칩까지만 (파산)
+  let t = ideal([10, 7, 3], [15, 1000, 1000], 2);
+  t = istep(t, 0, { type: 'die' });
+  t = istep(t, 1, { type: 'check' });
+  t = istep(t, 2, { type: 'check' });
+  assert('(i-g6) 벌금은 남은 스택까지만 (5)',
+    t.result.penalties[0].amount === 5 && t.result.amount === 35 &&
+    t.chips.join(',') === '0,1025,990');
+  assert('(i-g7) 벌금으로 파산하면 파산 처리',
+    t.log.some(function (e) { return e.t === 'bust' && e.p === 0; }));
+
+  // 10 이 아니면 벌칙이 없다
+  let u = ideal([9, 7, 3]);
+  u = istep(u, 0, { type: 'die' });
+  u = istep(u, 1, { type: 'check' });
+  u = istep(u, 2, { type: 'check' });
+  assert('(i-g8) 10 이 아닌 카드로 다이하면 벌칙 없음',
+    u.result.penalties.length === 0 && u.result.amount === 30);
+
+  // 다이로 판이 끝나도(1명 남음) 벌칙은 적용된다
+  let w = ideal([10, 7, 3]);
+  w = istep(w, 0, { type: 'die' });
+  w = istep(w, 1, { type: 'die' });
+  assert('(i-g9) 폴드 종료에서도 벌금이 팟에 더해진다',
+    w.over === true && w.result.winner === 2 && w.result.amount === 40 &&
+    w.chips.join(',') === '980,990,1030' && w.result.revealed === false);
+})();
+
+// (i-h) 올인 사이드 팟 (스택이 서로 다른 3인)
+(function () {
+  let s = ideal([3, 9, 10], [500, 120, 40], 2);
+  assert('(i-h1) 앤티 후 칩 490/110/30', s.chips.join(',') === '490,110,30' && s.pot === 30);
+  s = istep(s, 0, { type: 'half' });        // 15
+  s = istep(s, 1, { type: 'half' });        // 콜15 + 22 = 37
+  assert('(i-h2) 하프 두 번 → 팟 82', s.pot === 82 && s.chips.join(',') === '475,73,30');
+  s = istep(s, 2, { type: 'call' });        // 콜 37 요구 → 30 뿐이라 올인
+  assert('(i-h3) 스택을 넘는 콜은 올인으로 캡',
+    s.allIn[2] === true && s.chips[2] === 0 && s.pot === 112 && s.over === false);
+  s = istep(s, 0, { type: 'call' });        // 22
+  assert('(i-h4) 라운드 종료 → 즉시 쇼다운',
+    s.over === true && s.phase === 'showdown');
+  assert('(i-h5) 사이드 팟 2층: 메인 120(전원) / 사이드 14(P0,P1)',
+    s.result.pots.length === 2 &&
+    s.result.pots[0].amount === 120 && s.result.pots[0].eligible.join(',') === '0,1,2' &&
+    s.result.pots[0].winners.join(',') === '2' &&
+    s.result.pots[1].amount === 14 && s.result.pots[1].eligible.join(',') === '0,1' &&
+    s.result.pots[1].winners.join(',') === '1');
+  assert('(i-h6) 올인 좌석은 자기 층까지만 가져간다',
+    s.chips.join(',') === '453,87,120' &&
+    s.chips.reduce(function (a, b) { return a + b; }, 0) === 660);
+  assert('(i-h7) 언콜드 벳 반환은 발생하지 않았다',
+    !s.log.some(function (e) { return e.t === 'refund'; }));
+
+  // 언콜드 벳 반환: 아무도 콜하지 않은 초과분은 돌려준다
+  let t = ideal([3, 9, 10], [500, 60, 60], 2);
+  t = istep(t, 0, { type: 'half' });        // 15
+  t = istep(t, 1, { type: 'call' });        // 15
+  t = istep(t, 2, { type: 'call' });        // 15
+  assert('(i-h8) 전원 콜이면 반환 없음', t.over === true && t.pot === 0);
+})();
+
+// (i-i) 파산 / 딜러 이동 / 매치 종료
+(function () {
+  let s = ideal([9, 3], [1000, 10], 1);
+  assert('(i-i1) 앤티에서 올인이면 베팅 없이 바로 쇼다운',
+    s.over === true && s.phase === 'showdown' && s.result.amount === 20);
+  assert('(i-i2) 파산 → 매치 종료 + 최종 우승자',
+    s.chips.join(',') === '1010,0' && s.matchOver === true && s.matchWinner === 0 &&
+    s.log.some(function (e) { return e.t === 'bust' && e.p === 1; }));
+  assert('(i-i3) 매치 종료 후 nextHand 불가', !!Indian.nextHand(s, ideck([1, 2])).error);
+
+  // 3인: 파산한 좌석은 다음 판에 참가하지 않고 딜러도 건너뛴다
+  let t = ideal([9, 3, 5], [1000, 10, 1000], 2);
+  assert('(i-i4) 3인: 앤티 올인 좌석이 있어도 나머지는 정상 베팅',
+    t.phase === 'bet' && t.toAct === 0 && t.pot === 30);
+  t = istep(t, 0, { type: 'check' });
+  t = istep(t, 2, { type: 'check' });
+  assert('(i-i5) P1 파산', t.over === true && t.chips[1] === 0);
+  const n = Indian.nextHand(t, ideck([8, 8, 8]));
+  assert('(i-i6) 다음 판: 딜러는 칩이 남은 다음 좌석으로',
+    n.handNo === 2 && n.dealer === 0 && n.out[1] === true);
+  assert('(i-i7) 파산 좌석은 카드도 앤티도 없다',
+    n.hands[1].cards.length === 0 && n.folded[1] === true &&
+    n.pot === 20 && n.chips[1] === 0);
+  assert('(i-i8) 파산 좌석은 배분/액션 순서에서 빠진다',
+    cardVals(n).join(',') === '8,,8' && n.toAct === 2);
+})();
+
+// (i-j) 퇴장 (접속 종료) — 자동 다이 + 칩 회수
+(function () {
+  let s = ideal([10, 7, 3]);
+  const r = Indian.leave(s, 1);
+  s = r.state;
+  assert('(i-j1) 퇴장 = 자동 다이 + 칩 제거 + 로그',
+    s.left[1] === true && s.folded[1] === true && s.chips[1] === 0 &&
+    r.events.some(function (e) { return e.t === 'leave' && e.p === 1; }));
+  assert('(i-j2) 남은 좌석끼리 판이 계속된다', s.over === false && s.toAct === 0);
+  assert('(i-j3) 중복 퇴장은 무시된다', Indian.leave(s, 1).events.length === 0);
+  assert('(i-j4) 잘못된 좌석 번호는 에러', !!Indian.leave(s, 9).error);
+  s = istep(s, 0, { type: 'check' });
+  s = istep(s, 2, { type: 'check' });
+  assert('(i-j5) 퇴장 좌석은 쇼다운 대상이 아니다',
+    s.over === true && s.result.winner === 0 && s.result.cards[1] === null);
+  // 퇴장한 좌석이 10 을 들고 있어도 벌금은 없다 (칩이 이미 회수됐다)
+  let t = ideal([10, 7, 3]);
+  t = Indian.leave(t, 0).state;
+  t = istep(t, 1, { type: 'check' });
+  t = istep(t, 2, { type: 'check' });
+  assert('(i-j6) 퇴장 좌석에는 10 벌칙을 적용하지 않는다',
+    t.result.penalties.length === 0 && t.result.amount === 30);
+})();
+
+// (i-k) 로그 문구 (액션 로그 / 결과)
+(function () {
+  let s = ideal([7, 3, 10]);
+  const head = s.log[0];
+  assert('(i-k1) 판 머리글은 앤티 요약으로 시작한다',
+    head.t === 'hand' && Indian.describeEvent(head).indexOf('앤티 10 × 3') === 0);
+  s = istep(s, 0, { type: 'bbing' });
+  s = istep(s, 1, { type: 'half' });
+  const acts = s.log.filter(function (e) { return e.t === 'act'; });
+  assert('(i-k2) 액션 로그 문구',
+    Indian.describeEvent(acts[0], ['플레이어 1', '플레이어 2', '플레이어 3']) === '플레이어 1: 삥 (10)' &&
+    Indian.describeEvent(acts[1], ['플레이어 1', '플레이어 2', '플레이어 3']) === '플레이어 2: 하프 (30)');
+  s = istep(s, 2, { type: 'die' });
+  const die = s.log.filter(function (e) { return e.t === 'act' && e.action === 'die'; })[0];
+  assert('(i-k3) 다이 문구',
+    Indian.describeEvent(die, ['플레이어 1', '플레이어 2', '플레이어 3']) === '플레이어 3: 다이');
+  s = istep(s, 0, { type: 'call' });
+  assert('(i-k5) 판이 끝나기 전 로그에는 카드 값이 없다',
+    s.log.filter(function (e) {
+      return ['hand', 'ante', 'deal', 'round', 'act', 'refund'].indexOf(e.t) !== -1;
+    }).every(function (e) {
+      return e.card === undefined && e.cards === undefined && e.value === undefined;
+    }));
+  // 다이로 끝나면 카드 값이 없는 문구
+  let t = ideal([7, 3, 5]);
+  t = istep(t, 0, { type: 'die' });
+  t = istep(t, 1, { type: 'die' });
+  const fd = t.log.filter(function (e) { return e.t === 'fold'; })[0];
+  assert('(i-k6) 폴드 종료 문구에는 카드 값이 없다',
+    Indian.describeEvent(fd) === 'P3 승 (다른 참가자 다이) +30');
+
+  // 2인 판: 앤티 20 → 삥 10 → 따당 30 → 콜 20 = 팟 80
+  let d = ideal([7, 3], null, 1);
+  d = istep(d, 0, { type: 'bbing' });
+  d = istep(d, 1, { type: 'ttadang' });
+  d = istep(d, 0, { type: 'call' });
+  const sd = d.log.filter(function (e) { return e.t === 'showdown'; })[0];
+  assert('(i-k7) 쇼다운 문구: 카드 값 + 승자 + 획득액',
+    Indian.describeEvent(sd) === '쇼다운: P1(7) vs P2(3) → P1 승 +80');
+  assert('(i-k8) 분배 문구',
+    Indian.describeEvent({ t: 'showdown', split: true, winners: [0, 1], amount: 20, cards: [5, 5] }) ===
+    '쇼다운: P1(5) vs P2(5) → 팟 분배 (P1, P2)');
+})();
+
 console.log('\n결과: ' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail === 0 ? 0 : 1);

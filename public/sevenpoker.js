@@ -673,11 +673,42 @@
     }
   }
 
+  // ── 베팅 공용 헬퍼 (다른 카드 게임 엔진과 공유) ──────────
+  // 인디언포커(indianpoker.js)처럼 "칩 · 팟 · 액션" 규칙이 같고 카드 규칙만
+  // 다른 종목이 그대로 가져다 쓴다. 아래 함수들은 다음 필드만 사용하므로
+  // 상태의 나머지 모양(카드/단계)이 달라도 안전하다:
+  //   players, chips, pot, committed, bets, acted, folded, allIn,
+  //   raises, lastRaise, phase, toAct, over, log
+  var betting = {
+    ANTE: ANTE,
+    MAX_RAISES: MAX_RAISES,
+    START_CHIPS: START_CHIPS,
+    MAX_PLAYERS: MAX_PLAYERS,
+    clone: clone,
+    fill: fill,
+    emit: emit,
+    seatOrder: seatOrder,
+    activeSeats: activeSeats,
+    canAct: canAct,
+    maxBet: maxBet,
+    toCall: toCall,
+    nextActor: nextActor,
+    payIn: payIn,
+    refundExcess: refundExcess,
+    roundClosed: roundClosed,
+    buildPots: buildPots,
+    actionOptions: actionOptions,
+    findOption: findOption,
+    ACT_LABEL: ACT_LABEL,
+    defaultNames: defaultNames
+  };
+
   return {
     ANTE: ANTE,
     MAX_RAISES: MAX_RAISES,
     START_CHIPS: START_CHIPS,
     MAX_PLAYERS: MAX_PLAYERS,
+    betting: betting,
     createHand: createHand,
     apply: apply,
     leave: leave,

@@ -992,10 +992,10 @@ const isDrop = (r, c) => (m) => m.type === 'move' && m.game === 'connect4' && m.
   // 포커 테이블 방 (2~6인)
   // ============================================================
   // n명이 앉은 포커 방을 만든다 (첫 번째가 방장 = 좌석 0)
-  async function pokerTable(n) {
+  async function pokerTable(n, game) {
     const host = await open();
     const hm = collect(host);
-    send(host, { type: 'create', game: 'poker' });
+    send(host, { type: 'create', game: game || 'poker' });
     const cr = await until(hm, (m) => m.type === 'created');
     const cl = [{ ws: host, box: hm, seat: cr.seat }];
     for (let i = 1; i < n; i++) {
@@ -1347,6 +1347,245 @@ const isDrop = (r, c) => (m) => m.type === 'move' && m.game === 'connect4' && m.
       fresh0.view.chips.join(',') === '990,990' && fresh0.view.matchOver === false &&
       fresh0.view.dealer === 0, fresh0.view.chips);
     cl.forEach((c) => c.ws.close());
+    await wait(80);
+  }
+
+  // ============================================================
+  // 인디언포커 테이블 방 (2~6인)
+  //   포커와 같은 테이블 방 코드 경로를 쓰되, 마스킹이 정반대다.
+  //   "내 카드만 안 보이고 남의 카드는 다 보인다" 를 회선 위에서 검증한다.
+  // ============================================================
+  const indianTable = (n) => pokerTable(n, 'indian');
+  // 좌석 seat 의 카드 값 — "다른 좌석의 뷰" 에서 읽는다 (그 좌석 본인은 못 본다)
+  function peekCard(cl, seat) {
+    for (const c of cl) {
+      if (c.seat === seat) continue;
+      const v = seatView(c);
+      const card = v && v.hands[seat] && v.hands[seat].cards[0];
+      if (card) return card.r;
+    }
+    return null;
+  }
+  // 전 좌석의 카드 값 (테스트는 전지적 시점을 조립할 수 있다)
+  const peekAll = (cl) => cl.map((c) => peekCard(cl, c.seat));
+
+  // 44. 로비 / 시작 / 좌석별 역마스킹
+  {
+    const t = await indianTable(3);
+    const cl = t.cl;
+    assert('인디언포커 방 생성: 테이블 방(좌석 0 · 방장 · 정원 6)',
+      t.created.game === 'indian' && t.created.seat === 0 &&
+      t.created.isHost === true && t.created.capacity === 6, t.created);
+    const lb = lastOf(cl[0].box, 'tableLobby');
+    assert('인디언포커 로비: 3명 · 시작 가능',
+      lb.players.length === 3 && lb.canStart === true && lb.started === false, lb);
+
+    cl.forEach((c) => { c.box.length = 0; });
+    send(cl[0].ws, { type: 'startMatch' });
+    for (const c of cl) await until(c.box, (m) => m.type === 'pokerState');
+    const v0 = seatView(cl[0]);
+    assert('인디언포커 시작: 앤티 30 · 각자 1장 · 바로 베팅',
+      v0.pot === 30 && v0.chips.join(',') === '990,990,990' &&
+      v0.hands.every((h) => h.cards.length === 1) &&
+      v0.phase === 'bet' && v0.round === 1, v0.phase);
+    assert('인디언포커: 선은 딜러(0) 왼쪽 좌석', v0.dealer === 0 && v0.toAct === 1);
+
+    // 역마스킹: 내 카드만 null, 남의 카드는 값이 보인다
+    const maskOk = cl.every((c) => {
+      const v = seatView(c);
+      if (v.hands[c.seat].cards[0] !== null) return false;
+      return cl.every((o) => o.seat === c.seat ||
+        (v.hands[o.seat].cards[0] && typeof v.hands[o.seat].cards[0].r === 'number'));
+    });
+    assert('인디언포커 마스킹: 내 카드만 null · 남의 카드는 전부 보인다 (3인 전부)', maskOk);
+    assert('인디언포커: 덱은 전송되지 않는다', v0.deck === undefined && v0.deckLeft === 17);
+
+    // 회선 위 원문 검사: 내 카드 값이 담긴 카드 객체가 아예 오지 않는다.
+    // 카드 값은 JSON 에서 항상 {"r":N} 꼴이므로 이 부분 문자열만 보면 정확하다.
+    // (같은 숫자를 상대가 들고 있으면 그 값은 정당하게 등장하므로 그때는
+    //  자리 기준 검사만 한다 — 덱에 같은 숫자가 두 장씩 있기 때문이다)
+    const all = peekAll(cl);
+    let strict = 0, positional = 0;
+    cl.forEach((c) => {
+      const mine = all[c.seat];
+      const raw = c.box.map((m) => JSON.stringify(m)).join('|');
+      const twin = all.some((v, i) => i !== c.seat && v === mine);
+      if (!twin) { if (raw.indexOf('"r":' + mine) === -1) strict++; }
+      else if (c.box.every((m) => !m.view || m.view.hands[c.seat].cards[0] === null)) positional++;
+    });
+    assert('인디언포커: 판 종료 전 내 카드 값은 회선에 실려 오지 않는다',
+      strict + positional === 3, { strict, positional, all });
+    assert('인디언포커: 로그(전원 방송)에는 카드 값이 없다',
+      cl.every((c) => c.box.every((m) => (m.events || []).every((e) =>
+        e.card === undefined && e.cards === undefined))));
+
+    // 차례가 아닌 좌석의 액션은 거부된다
+    const wrong = cl.find((c) => c.seat !== v0.toAct);
+    wrong.box.length = 0;
+    send(wrong.ws, { type: 'pokerAction', action: { type: 'check' } });
+    const inv = await until(wrong.box, (m) => m.type === 'invalid');
+    assert('인디언포커: 차례가 아닌 좌석의 액션 거부',
+      inv.reason === 'poker' && inv.message === '당신의 차례가 아닙니다', inv);
+    assert('인디언포커: 거부된 액션은 브로드캐스트되지 않는다',
+      !wrong.box.some((m) => m.type === 'pokerState'));
+
+    // 시작 후 입장 거부
+    const late = await open(); const lm = collect(late);
+    send(late, { type: 'join', code: t.code });
+    const e = await until(lm, (m) => m.type === 'error');
+    assert('인디언포커: 시작된 방에는 입장할 수 없다', e.message === '이미 시작된 방입니다', e);
+    late.close();
+
+    // 한 판 완주: 삥 → 콜 → 콜 → 쇼다운
+    await tableAct(cl, 1, { type: 'bbing' });
+    assert('인디언포커: 삥 10 → 팟 40', curView(cl).pot === 40);
+    await tableAct(cl, 2, { type: 'call' });
+    await tableAct(cl, 0, { type: 'call' });
+    const end = cl.map((c) => seatView(c));
+    const best = Math.max.apply(null, all);
+    assert('인디언포커: 전원 콜 → 쇼다운 (팟 60)',
+      end[0].over === true && end[0].phase === 'showdown' && end[0].result.amount === 60,
+      end[0].result);
+    assert('인디언포커 쇼다운: 전원이 모든 카드를 본다 (자기 카드 포함)',
+      end.every((v) => v.hands.every((h, i) => h.cards[0] && h.cards[0].r === all[i])),
+      all);
+    assert('인디언포커 쇼다운: 가장 높은 숫자가 이긴다',
+      end[0].result.payouts.every((p, i) => p === 0 || all[i] === best) &&
+      end[0].result.payouts.reduce((x, y) => x + y, 0) === 60, {
+        cards: all, payouts: end[0].result.payouts
+      });
+    assert('인디언포커: 칩 정산 + 총량 보존',
+      end[0].chips.every((c2, i) => c2 === 980 + end[0].result.payouts[i]) &&
+      end[0].chips.reduce((x, y) => x + y, 0) === 3000, end[0].chips);
+    assert('인디언포커: 모든 좌석의 뷰가 동일한 칩/팟을 본다',
+      end.every((v) => v.pot === 0 && v.chips.join(',') === end[0].chips.join(',')));
+
+    cl.forEach((c) => c.ws.close());
+    await wait(80);
+  }
+
+  // 45. 10 폴드 벌칙 (10 이 나올 때까지 판을 돌려 실제로 재현한다)
+  {
+    const t = await indianTable(3);
+    const cl = t.cl;
+    cl.forEach((c) => { c.box.length = 0; });
+    send(cl[0].ws, { type: 'startMatch' });
+    for (const c of cl) await until(c.box, (m) => m.type === 'pokerState');
+
+    let done = null, guard = 0;
+    while (guard++ < 40 && !done) {
+      const cards = peekAll(cl);
+      const ten = cards.indexOf(10);
+      const before = seatView(cl[0]).chips.slice();
+      if (ten === -1) {
+        // 10 이 없는 판은 전원 체크로 빨리 끝내고 다음 판으로
+        let g2 = 0;
+        while (g2++ < 10) {
+          const v = curView(cl);
+          if (v.over || v.phase !== 'bet') break;
+          await tableAct(cl, v.toAct, { type: 'check' });
+        }
+      } else {
+        let g2 = 0;
+        while (g2++ < 10) {
+          const v = curView(cl);
+          if (v.over || v.phase !== 'bet') break;
+          await tableAct(cl, v.toAct, { type: v.toAct === ten ? 'die' : 'check' });
+        }
+        done = { ten: ten, before: before, cards: cards, view: seatView(cl[0]) };
+        break;
+      }
+      const v = seatView(cl[0]);
+      if (v.matchOver) break;
+      await tableAct(cl, 0, { type: 'nextHand' });
+    }
+
+    assert('인디언포커: 10 을 든 좌석이 다이하는 판을 재현했다', !!done, guard);
+    if (done) {
+      const v = done.view;
+      const pen = v.result.penalties;
+      assert('인디언포커 벌칙: 10 을 들고 다이 → 벌금 10',
+        pen.length === 1 && pen[0].p === done.ten && pen[0].amount === 10, pen);
+      assert('인디언포커 벌칙: 벌금이 팟에 더해진 뒤 지급된다 (30 + 10 = 40)',
+        v.result.amount === 40 &&
+        v.result.payouts.reduce((x, y) => x + y, 0) === 40, v.result);
+      // done.before 는 "앤티까지 낸 뒤" 의 칩이다 (판이 시작될 때 이미 앤티가 빠진다)
+      assert('인디언포커 벌칙: 다이한 좌석은 앤티 10 + 벌금 10 을 낸다',
+        v.chips[done.ten] === done.before[done.ten] - 10 &&
+        v.committed[done.ten] === 20, {
+          before: done.before, after: v.chips, committed: v.committed, ten: done.ten
+        });
+      assert('인디언포커 벌칙: 칩 총량은 보존된다 (3인 x 1000)',
+        v.pot === 0 && v.chips.reduce((x, y) => x + y, 0) === 3000, v.chips);
+      assert('인디언포커 벌칙: 로그로 전원에게 공개된다',
+        cl.every((c) => c.box.some((m) => (m.events || []).some((e) =>
+          e.t === 'penalty' && e.p === done.ten && e.card === 10))));
+      assert('인디언포커 벌칙: 벌금을 낸 본인은 자기 카드를 알게 된다',
+        seatView(cl.find((c) => c.seat === done.ten)).hands[done.ten].cards[0].r === 10);
+    }
+    cl.forEach((c) => c.ws.close());
+    await wait(80);
+  }
+
+  // 46. 진행 중 퇴장 / 채팅 / 2인 방 종목 변경 차단
+  {
+    const t = await indianTable(3);
+    const cl = t.cl;
+    cl.forEach((c) => { c.box.length = 0; });
+    send(cl[0].ws, { type: 'startMatch' });
+    for (const c of cl) await until(c.box, (m) => m.type === 'pokerState');
+
+    cl[0].box.length = 0; cl[1].box.length = 0;
+    cl[2].ws.close();
+    const after = await until(cl[0].box, (m) => m.type === 'pokerState' && m.view.left[2] === true);
+    assert('인디언포커 퇴장: 자동 다이 + 칩 제거 + 남은 사람끼리 계속',
+      after.view.folded[2] === true && after.view.chips[2] === 0 &&
+      after.view.over === false && after.view.toAct !== 2, after.view.chips);
+    const nt = await until(cl[0].box, (m) => m.type === 'tableNotice');
+    assert('인디언포커 퇴장: 남은 사람에게 알림',
+      nt.text === '플레이어 3 님이 퇴장했습니다', nt);
+
+    // 남은 두 명이 판을 마친다
+    let guard = 0;
+    const two = cl.slice(0, 2);
+    while (guard++ < 10) {
+      const v = curView(two);
+      if (v.over || v.phase !== 'bet') break;
+      await tableAct(two, v.toAct, { type: 'check' });
+    }
+    const fin = seatView(cl[0]);
+    assert('인디언포커: 퇴장 후에도 판이 정상적으로 끝난다',
+      fin.over === true && fin.result.amount === 30 &&
+      fin.chips[0] + fin.chips[1] === 2010, fin.chips);
+    assert('인디언포커: 퇴장 좌석에는 10 벌칙을 적용하지 않는다',
+      fin.result.penalties.every((p) => p.p !== 2), fin.result.penalties);
+
+    two.forEach((c) => { c.box.length = 0; });
+    send(cl[1].ws, { type: 'chat', text: '인디언 안녕' });
+    const ch = await until(cl[0].box, (m) => m.type === 'chat');
+    assert('인디언포커 채팅: 좌석 이름으로 전달',
+      ch.text === '인디언 안녕' && ch.from === '플레이어 2' && ch.seat === 1, ch);
+
+    two.forEach((c) => { c.box.length = 0; });
+    send(cl[0].ws, { type: 'gameChangeRequest', game: 'omok' });
+    send(cl[0].ws, { type: 'swapRequest' });
+    send(cl[0].ws, { type: 'undoRequest' });
+    send(cl[0].ws, { type: 'restartRequest' });
+    await wait(120);
+    assert('인디언포커 테이블 방은 게임/돌 바꾸기·무르기·재대국 요청을 무시한다',
+      !two.some((c) => c.box.some((m) =>
+        ['gameChangeRequest', 'swapRequest', 'restartRequest', 'undoRequest', 'gameChanged']
+          .indexOf(m.type) !== -1)));
+
+    // 2인 방(오목)에서 인디언포커로는 바꿀 수 없다 (테이블 종목이라 좌석 구조가 다르다)
+    const duo = await omokRoom();
+    duo.wm.length = 0;
+    send(duo.black, { type: 'gameChangeRequest', game: 'indian' });
+    await wait(120);
+    assert('2인 방: 인디언포커로의 게임 변경 요청은 무시된다',
+      !duo.wm.some((m) => m.type === 'gameChangeRequest'));
+    duo.black.close(); duo.white.close();
+    two.forEach((c) => c.ws.close());
     await wait(80);
   }
 

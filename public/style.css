@@ -1029,16 +1029,65 @@ body.theme-excel .seat-row {
 body.theme-excel .seat-row.active { border-color: #217346; box-shadow: none; }
 body.theme-excel .table-player { background: #fff; border: 1px solid #d4d4d4; border-radius: 0; }
 body.theme-excel .table-player .tp-host { background: #217346; border-radius: 0; font-weight: 500; }
-/* 포커: 사이드바 아이콘을 칩처럼 (흑/백 돌로 보이지 않게) */
-body.game-poker .stone-icon.black {
+/* 포커/인디언포커: 사이드바 아이콘을 칩처럼 (흑/백 돌로 보이지 않게) */
+body.game-poker .stone-icon.black,
+body.game-indian .stone-icon.black {
   background: radial-gradient(circle at 35% 30%, #6fd39a 0%, #1d7a4c 72%);
   box-shadow: inset 0 2px 3px rgba(255, 255, 255, 0.25);
 }
-body.game-poker .stone-icon.white {
+body.game-poker .stone-icon.white,
+body.game-indian .stone-icon.white {
   background: radial-gradient(circle at 35% 30%, #ffd98a 0%, #d99a1f 75%);
   box-shadow: inset 0 -1px 2px rgba(0, 0, 0, 0.12);
 }
-body.game-poker .board-flip { display: none; }
+body.game-poker .board-flip,
+body.game-indian .board-flip { display: none; }
+
+/* ============================================================
+   인디언포커 — 카드 한 장(숫자만)
+   ------------------------------------------------------------
+   남의 카드는 앞면(큰 숫자), 내 카드는 뒷면('?').
+   무늬가 없으므로 모서리 표기(.pc-corner) 대신 가운데 숫자 하나만 쓴다.
+   ============================================================ */
+.pcard.ip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 56px;
+}
+.pcard.ip .ip-num {
+  font-size: 2.6em;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+/* 10 = 벌칙 카드. 들고 다이하면 벌금 → 눈에 띄게. */
+.pcard.ip.ten {
+  color: #b5730a;
+  border-color: #e0a83a;
+  box-shadow: 0 0 0 2px rgba(242, 201, 76, 0.55), 0 2px 5px rgba(0, 0, 0, 0.35);
+  background: linear-gradient(180deg, #fffaef 0%, #fff 55%);
+}
+.pcard.ip.back .ip-num { color: #cdd8f5; font-size: 2.1em; }
+body.game-indian .ct-opps .pcard { max-width: 56px; }
+body.game-indian .ct-mine .pcard { max-width: 84px; }
+/* 좌석 포드가 한 장짜리라 포커보다 좁아도 된다 */
+body.game-indian { --board-max: 560px; }
+body.theme-excel.game-indian { --board-max: min(680px, max(280px, calc(100vh - 240px))); }
+/* 엑셀 테마: 숫자 셀 (뒷면은 '###' 회색 셀) */
+body.theme-excel .pcard.ip { aspect-ratio: 5 / 4; }
+body.theme-excel .pcard.ip .ip-num { display: none; }
+body.theme-excel .pcard.ip .pc-cell {
+  font-weight: 700;
+  font-size: 1.15em;
+}
+body.theme-excel .pcard.ip.ten {
+  background: #fff3cd;
+  border-color: #d4d4d4;
+  color: #9c5700;
+  box-shadow: none;
+}
+body.theme-excel .pcard.ip.back .pc-cell { font-weight: 400; }
 
 /* ---------- 기보 ---------- */
 .record-card { display: flex; flex-direction: column; }
