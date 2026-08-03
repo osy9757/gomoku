@@ -18,13 +18,23 @@ const Cards = require('./public/cards.js');
 const Poker = require('./public/sevenpoker.js');
 
 // 지원 종목 (게임 생성/변경에서 공용으로 쓰는 화이트리스트)
-const GAMES = ['omok', 'othello', 'connect4', 'matpoker'];
+const GAMES = ['omok', 'othello', 'connect4', 'matpoker', 'poker'];
+// '게임 바꾸기'로 전환할 수 있는 종목 (2인 방 전용 — 포커는 테이블 방이라 제외)
+const CHANGEABLE_GAMES = GAMES.filter((g) => g !== 'poker');
 function normGame(g) {
   return GAMES.indexOf(g) !== -1 ? g : null;
 }
-// 카드 게임(보드가 없는 종목)
+// 카드 게임(보드가 없는 종목 = 세븐포커 엔진을 쓰는 종목)
 function isCardGame(g) {
-  return g === 'matpoker';
+  return g === 'matpoker' || g === 'poker';
+}
+// 테이블 방(2~6인 좌석제). 현재는 포커만.
+const TABLE_CAPACITY = 6;
+function isTableGame(g) {
+  return g === 'poker';
+}
+function isTableRoom(room) {
+  return !!room && isTableGame(room.game);
 }
 
 // 방의 게임 종류에 맞는 규칙 모듈 반환
@@ -43,9 +53,11 @@ function colorToStr(c) {
 function seatOfColor(color) {
   return color === Rules.BLACK ? 0 : 1;
 }
+// 좌석 번호: 테이블 방은 고정 좌석(p.seat), 2인 방은 색으로 결정된다.
 function seatOf(room, ws) {
   const me = playerOf(room, ws);
-  return me ? seatOfColor(me.color) : null;
+  if (!me) return null;
+  return isTableRoom(room) ? me.seat : seatOfColor(me.color);
 }
 // 암호학적 난수로 셔플 (엔진은 결정적이고, 무작위성은 서버가 책임진다)
 function secureRandom() {
@@ -63,11 +75,11 @@ function startPokerMatch(room) {
   });
 }
 // 상태가 바뀔 때마다 각 플레이어에게 "그 사람 시점" 만 보낸다.
-// events 는 양쪽에 동일하게 가는 공개 로그(히든 카드 정보가 없다).
+// events 는 전원에게 동일하게 가는 공개 로그(히든 카드 정보가 없다).
 function sendPokerState(room, events) {
   if (!room.poker) return;
   room.players.forEach((p) => {
-    const seat = seatOfColor(p.color);
+    const seat = isTableRoom(room) ? p.seat : seatOfColor(p.color);
     send(p.ws, {
       type: 'pokerState',
       seat: seat,
@@ -75,6 +87,74 @@ function sendPokerState(room, events) {
       events: events || []
     });
   });
+}
+
+// ── 포커 테이블 방(2~6인) ────────────────────────────────
+// 좌석은 0..N-1 로 연속이며, 매치가 시작되기 전(로비)에는 입퇴장마다
+// 0 부터 다시 채워 넣는다(연속성 보장). 매치 중에는 절대 바뀌지 않는다
+// (엔진 상태가 좌석 번호로 인덱싱되어 있다).
+function seatLabel(seat) {
+  return '플레이어 ' + (seat + 1);
+}
+function reseatTable(room) {
+  room.players.forEach((p, i) => { p.seat = i; });
+  room.hostSeat = room.players.length ? room.players[0].seat : 0;
+}
+function freeSeat(room) {
+  for (let i = 0; i < TABLE_CAPACITY; i++) {
+    if (!room.players.some((p) => p.seat === i)) return i;
+  }
+  return -1;
+}
+function tableChips(room, seat) {
+  if (room.poker && typeof room.poker.chips[seat] === 'number') return room.poker.chips[seat];
+  return Poker.START_CHIPS;
+}
+// 로비 상태 방송. 입장/퇴장/시작/매치 종료 등 모든 변화에서 호출한다.
+function sendTableLobby(room, notice) {
+  const started = !!room.started;
+  const players = room.players
+    .slice()
+    .sort((a, b) => a.seat - b.seat)
+    .map((p) => ({
+      seat: p.seat,
+      name: seatLabel(p.seat),
+      isHost: p.seat === room.hostSeat,
+      chips: tableChips(room, p.seat)
+    }));
+  const matchOver = !!(room.poker && room.poker.matchOver);
+  broadcast(room, {
+    type: 'tableLobby',
+    code: room.code,
+    players: players,
+    hostSeat: room.hostSeat,
+    capacity: TABLE_CAPACITY,
+    started: started,
+    canStart: players.length >= 2 && (!started || matchOver),
+    notice: notice || null
+  });
+}
+function tableNotice(room, text) {
+  broadcast(room, { type: 'tableNotice', text: text });
+}
+// 새 매치(칩 1000 리셋). 좌석은 0..N-1 로 정리한 뒤 첫 판을 돌린다.
+function startTableMatch(room) {
+  reseatTable(room);
+  const n = room.players.length;
+  const chips = [];
+  for (let i = 0; i < n; i++) chips.push(Poker.START_CHIPS);
+  room.started = true;
+  room.poker = Poker.createHand({
+    players: n,
+    deckOrder: shuffledDeck(),
+    chips: chips,
+    dealer: 0
+  });
+  room.players.forEach((p) => {
+    send(p.ws, { type: 'tableStart', seat: p.seat, players: n, isHost: p.seat === room.hostSeat });
+  });
+  sendTableLobby(room);
+  sendPokerState(room, room.poker.log.slice());
 }
 
 const PORT = process.env.PORT || 3000;
@@ -144,6 +224,35 @@ wss.on('connection', (ws) => {
       case 'create': {
         const game = normGame(msg.game) || 'omok';
         const rule = msg.rule === 'free' ? 'free' : 'renju';
+        // ── 포커: 좌석제 테이블 방(최대 6인). 생성자 = 좌석 0 = 방장 ──
+        if (isTableGame(game)) {
+          const tcode = genCode();
+          const troom = {
+            code: tcode,
+            game: game,
+            rule: rule,
+            board: null,
+            turn: null,
+            moves: [],
+            poker: null,
+            pendingGame: null,
+            started: false,
+            hostSeat: 0,
+            players: [{ ws: ws, color: null, seat: 0 }]
+          };
+          rooms.set(tcode, troom);
+          ws.roomCode = tcode;
+          send(ws, {
+            type: 'created',
+            code: tcode,
+            game: game,
+            seat: 0,
+            isHost: true,
+            capacity: TABLE_CAPACITY
+          });
+          sendTableLobby(troom);
+          break;
+        }
         const M = gameModule(game);
         // 생성자 색 선호: 'black' | 'white' | 'random' (기본 black)
         let pref = msg.color;
@@ -187,6 +296,32 @@ wss.on('connection', (ws) => {
           send(ws, { type: 'error', message: '존재하지 않는 방입니다' });
           return;
         }
+        // ── 포커 테이블 방: 빈 좌석에 앉는다. 시작 후에는 입장 불가 ──
+        if (isTableRoom(room)) {
+          if (room.started) {
+            send(ws, { type: 'error', message: '이미 시작된 방입니다' });
+            return;
+          }
+          if (room.players.length >= TABLE_CAPACITY) {
+            send(ws, { type: 'error', message: '방이 가득 찼습니다' });
+            return;
+          }
+          const seat = freeSeat(room);
+          room.players.push({ ws: ws, color: null, seat: seat });
+          reseatTable(room);
+          ws.roomCode = code;
+          const mine = playerOf(room, ws);
+          send(ws, {
+            type: 'joined',
+            code: code,
+            game: room.game,
+            seat: mine.seat,
+            isHost: mine.seat === room.hostSeat,
+            capacity: TABLE_CAPACITY
+          });
+          sendTableLobby(room, seatLabel(mine.seat) + ' 님이 입장했습니다');
+          return;
+        }
         if (room.players.length >= 2) {
           send(ws, { type: 'error', message: '방이 가득 찼습니다' });
           return;
@@ -219,7 +354,30 @@ wss.on('connection', (ws) => {
         break;
       }
 
-      // ── 맞포커 액션 ────────────────────────────────────
+      // ── 포커 테이블: 매치 시작 / 새 경기 (방장 전용) ────
+      case 'startMatch':
+      case 'newMatch': {
+        const room = rooms.get(ws.roomCode);
+        if (!isTableRoom(room)) return;
+        const seat = seatOf(room, ws);
+        if (seat === null) return;
+        if (seat !== room.hostSeat) {
+          send(ws, { type: 'error', message: '방장만 시작할 수 있습니다' });
+          return;
+        }
+        if (room.players.length < 2) {
+          send(ws, { type: 'error', message: '2명 이상이어야 시작할 수 있습니다' });
+          return;
+        }
+        if (room.started && room.poker && !room.poker.matchOver) {
+          send(ws, { type: 'error', message: '이미 시작된 방입니다' });
+          return;
+        }
+        startTableMatch(room);
+        break;
+      }
+
+      // ── 카드 게임 액션 (맞포커 / 포커 공용) ─────────────
       // 모든 판정은 서버가 한다. 클라이언트는 자기 시점 뷰만 받는다.
       case 'pokerAction': {
         const room = rooms.get(ws.roomCode);
@@ -241,6 +399,7 @@ wss.on('connection', (ws) => {
           if (nh.error) return;
           room.poker = nh;
           sendPokerState(room, room.poker.log.slice());
+          if (isTableRoom(room)) sendTableLobby(room);
           return;
         }
 
@@ -251,6 +410,8 @@ wss.on('connection', (ws) => {
         }
         room.poker = res.state;
         sendPokerState(room, res.events);
+        // 테이블 방은 로비 목록에도 칩이 표시되므로 함께 갱신한다
+        if (isTableRoom(room)) sendTableLobby(room);
         break;
       }
 
@@ -356,6 +517,13 @@ wss.on('connection', (ws) => {
         const me = playerOf(room, ws);
         if (!me) return;
         let text = (msg.text || '').toString().slice(0, 500);
+        // 테이블 방은 색이 없으므로 좌석 이름으로 말한다 ('플레이어 N').
+        if (isTableRoom(room)) {
+          broadcast(room, {
+            type: 'chat', text: text, from: seatLabel(me.seat), seat: me.seat
+          });
+          break;
+        }
         const from = me.color === Rules.BLACK ? 'black' : 'white';
         broadcast(room, { type: 'chat', text: text, from: from });
         break;
@@ -365,6 +533,7 @@ wss.on('connection', (ws) => {
         const room = rooms.get(ws.roomCode);
         if (!room) return;
         if (isCardGame(room.game)) return;  // 카드 게임은 무르기 없음
+        if (isTableRoom(room)) return;
         const opp = opponentOf(room, ws);
         if (opp) send(opp.ws, { type: 'undoRequest' });
         break;
@@ -373,6 +542,7 @@ wss.on('connection', (ws) => {
       case 'undoResponse': {
         const room = rooms.get(ws.roomCode);
         if (!room) return;
+        if (isTableRoom(room)) return;
         if (msg.accept) {
           if (room.game === 'othello') {
             // 후행 패스 엔트리 제거 후 마지막 실착수 되돌리기
@@ -413,6 +583,7 @@ wss.on('connection', (ws) => {
         if (!room) return;
         // 카드 게임에는 돌 색이 없다(좌석은 고정) → 요청 자체를 무시
         if (isCardGame(room.game)) return;
+        if (isTableRoom(room)) return;
         const opp = opponentOf(room, ws);
         if (opp) send(opp.ws, { type: 'swapRequest' });
         break;
@@ -422,6 +593,7 @@ wss.on('connection', (ws) => {
         const room = rooms.get(ws.roomCode);
         if (!room) return;
         if (isCardGame(room.game)) return;
+        if (isTableRoom(room)) return;
         if (msg.accept) {
           if (room.moves.length > 0) return; // 착수 이후 스왑 거부(무시)
           // 두 플레이어 색 교대
@@ -449,8 +621,11 @@ wss.on('connection', (ws) => {
       case 'gameChangeRequest': {
         const room = rooms.get(ws.roomCode);
         if (!room) return;
+        // 포커 테이블 방은 종목을 바꿀 수 없다 (좌석/칩이 종목에 묶여 있다)
+        if (isTableRoom(room)) return;
         const game = normGame(msg.game);
         if (!game) return;              // 알 수 없는 종목
+        if (CHANGEABLE_GAMES.indexOf(game) === -1) return;   // 포커로는 못 바꾼다
         if (game === room.game) return; // 현재와 같은 종목
         const opp = opponentOf(room, ws);
         if (!opp) return;
@@ -464,6 +639,7 @@ wss.on('connection', (ws) => {
       case 'gameChangeResponse': {
         const room = rooms.get(ws.roomCode);
         if (!room) return;
+        if (isTableRoom(room)) return;
         const target = room.pendingGame;
         room.pendingGame = null;        // 응답 한 번으로 요청은 소멸
         if (msg.accept) {
@@ -485,6 +661,8 @@ wss.on('connection', (ws) => {
       case 'restartRequest': {
         const room = rooms.get(ws.roomCode);
         if (!room) return;
+        // 테이블 방의 '새 경기'는 방장 전용(startMatch)이라 합의 절차가 없다
+        if (isTableRoom(room)) return;
         const opp = opponentOf(room, ws);
         if (opp) send(opp.ws, { type: 'restartRequest' });
         break;
@@ -493,6 +671,7 @@ wss.on('connection', (ws) => {
       case 'restartResponse': {
         const room = rooms.get(ws.roomCode);
         if (!room) return;
+        if (isTableRoom(room)) return;
         if (msg.accept) {
           resetRoomBoard(room);
           // 색 교대. 단 카드 게임에서 색은 "좌석"이므로 교대하지 않는다
@@ -525,6 +704,49 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     const room = rooms.get(ws.roomCode);
     if (!room) return;
+
+    // ── 포커 테이블 방 ────────────────────────────────────
+    // 방은 남은 사람들을 위해 유지된다. 진행 중이면 나간 좌석을 자동 다이
+    // 처리하고(그 좌석의 칩은 게임에서 빠진다) 남은 사람들끼리 계속한다.
+    if (isTableRoom(room)) {
+      const me = playerOf(room, ws);
+      if (!me) return;
+      const seat = me.seat;
+      room.players = room.players.filter((p) => p.ws !== ws);
+      if (room.players.length === 0) { rooms.delete(room.code); return; }
+
+      if (!room.started) {
+        // 로비 단계: 좌석을 다시 채우고(연속 좌석 유지) 방장도 재지정
+        reseatTable(room);
+        sendTableLobby(room, seatLabel(seat) + ' 님이 나갔습니다');
+        return;
+      }
+
+      // 매치 진행 중
+      if (room.poker) {
+        const res = Poker.leave(room.poker, seat);
+        if (!res.error) {
+          room.poker = res.state;
+          sendPokerState(room, res.events);
+        }
+      }
+      if (seat === room.hostSeat) {
+        room.hostSeat = room.players.reduce((m, p) => Math.min(m, p.seat), TABLE_CAPACITY);
+        tableNotice(room, seatLabel(room.hostSeat) + ' 님이 방장이 되었습니다');
+      }
+      tableNotice(room, seatLabel(seat) + ' 님이 퇴장했습니다');
+      if (room.players.length === 1) {
+        // 혼자 남으면 매치를 끝내고 로비 상태로 되돌린다
+        room.started = false;
+        room.poker = null;
+        reseatTable(room);
+        sendTableLobby(room, '혼자 남아 로비로 돌아왔습니다');
+      } else {
+        sendTableLobby(room);
+      }
+      return;
+    }
+
     const opp = opponentOf(room, ws);
     // 맞포커: 판이 진행 중이었다면 나간 쪽을 다이 처리해서 남은 사람이
     // 팟을 가져가게 한 뒤(정산된 뷰를 한 번 더 보낸다) 퇴장을 알린다.

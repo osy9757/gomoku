@@ -721,5 +721,348 @@ function opt(st, p, type) {
   assert('(p-h3) 팟 20 을 10씩 분배', s.chips[0] === 500 && s.chips[1] === 500);
 })();
 
+// ============================================================
+// 포커(N인 세븐포커, 2~6인) 엔진 검증 — public/sevenpoker.js
+//   딜 순서: 딜러 다음 좌석부터 시계방향 (4장씩)
+//   선(先): 오픈 카드가 가장 높은 좌석 (완전 동점이면 좌석 번호가 작은 쪽)
+//   액션 순서: 선부터 시계방향, 폴드/올인 좌석은 건너뜀
+// ============================================================
+
+// 3인용 고정 덱 (dealer=2 → 배분 순서 P0, P1, P2)
+//  P0: ♠A ♥A ♦A ♣2(버림) + ♠K ♥K ♦3  -> 풀하우스 A/K
+//  P1: ♠Q ♥Q ♦J ♣3(버림) + ♠J ♥9 ♦8  -> 투페어 Q/J (키커 9)
+//  P2: ♠7 ♥7 ♦4 ♣5(버림) + ♠4 ♥2 ♦6  -> 투페어 7/4 (키커 6)
+const DECK3 = [
+  cd(14, SP), cd(12, SP), cd(7, SP),     // 1번째: P0, P1, P2
+  cd(14, HE), cd(12, HE), cd(7, HE),     // 2번째
+  cd(14, DI), cd(11, DI), cd(4, DI),     // 3번째
+  cd(2, CL), cd(3, CL), cd(5, CL),       // 4번째 (전원 버릴 카드)
+  cd(13, SP), cd(11, SP), cd(4, SP),     // 5번째 (오픈)
+  cd(13, HE), cd(9, HE), cd(2, HE),      // 6번째 (오픈)
+  cd(3, DI), cd(8, DI), cd(6, DI)        // 7번째 (히든)
+];
+// 세 좌석이 매장/오픈까지 마친 3인 판을 만든다 (오픈: P0 ♠A, P1 ♦J, P2 ♠7)
+function open3(chips, dealer, deck) {
+  let s = Poker.createHand({
+    players: 3, deckOrder: deck || DECK3,
+    chips: chips || [1000, 1000, 1000], dealer: dealer === undefined ? 2 : dealer
+  });
+  s = step(s, 0, { type: 'discard', index: 3 });
+  s = step(s, 1, { type: 'discard', index: 3 });
+  s = step(s, 2, { type: 'discard', index: 3 });
+  s = step(s, 0, { type: 'open', index: 0 });
+  s = step(s, 1, { type: 'open', index: 2 });
+  s = step(s, 2, { type: 'open', index: 0 });
+  return s;
+}
+
+// (n-a) 3인 배분/앤티/단계 진행 + 마스킹
+(function () {
+  let s = Poker.createHand({ players: 3, deckOrder: DECK3, chips: [1000, 1000, 1000], dealer: 2 });
+  assert('(n-a1) 3인 앤티 10씩 → 팟 30 / 칩 990',
+    s.players === 3 && s.pot === 30 &&
+    s.chips[0] === 990 && s.chips[1] === 990 && s.chips[2] === 990);
+  assert('(n-a2) 3인 4장씩 배분 (딜러 다음 좌석 P0 부터)',
+    s.dealtCount === 12 &&
+    s.hands[0].cards.length === 4 && s.hands[1].cards.length === 4 &&
+    s.hands[2].cards.length === 4 &&
+    s.hands[0].cards[0].r === 14 && s.hands[1].cards[0].r === 12 &&
+    s.hands[2].cards[0].r === 7);
+
+  s = step(s, 2, { type: 'discard', index: 3 });
+  s = step(s, 0, { type: 'discard', index: 3 });
+  assert('(n-a3) 두 명만 매장하면 아직 discard 단계',
+    s.phase === 'discard' && s.hands[1].cards.length === 4);
+  s = step(s, 1, { type: 'discard', index: 3 });
+  assert('(n-a4) 전원 매장 → open 단계',
+    s.phase === 'open' && s.hands.every((h) => h.cards.length === 3));
+  s = step(s, 0, { type: 'open', index: 0 });
+  s = step(s, 1, { type: 'open', index: 2 });
+  assert('(n-a5) 두 명만 오픈하면 아직 open 단계', s.phase === 'open');
+  s = step(s, 2, { type: 'open', index: 0 });
+  assert('(n-a6) 전원 오픈 → 1라운드 베팅, 오픈 최고(♠A) 좌석이 선',
+    s.phase === 'bet' && s.round === 1 && s.toAct === 0);
+
+  const v1 = Poker.viewFor(s, 1);
+  assert('(n-a7) viewFor: 나 이외 모든 좌석의 히든이 null',
+    v1.me === 1 &&
+    v1.hands[0].cards.filter((c) => c === null).length === 2 &&
+    v1.hands[2].cards.filter((c) => c === null).length === 2 &&
+    v1.hands[1].cards.every((c) => c && c.r));
+  assert('(n-a8) viewFor: 나 이외 모든 좌석의 매장 카드가 null + 덱 비공개',
+    v1.hands[0].buried === null && v1.hands[2].buried === null &&
+    v1.hands[1].buried.r === 3 && v1.deck === undefined && v1.deckLeft === DECK3.length - 12);
+  const vnull = Poker.viewFor(s, null);
+  assert('(n-a9) viewFor(null): 전원 히든 가림 (로컬 핫시트 가리개용)',
+    vnull.me === null && vnull.options.length === 0 &&
+    [0, 1, 2].every((i) => vnull.hands[i].cards.filter((c) => c === null).length === 2));
+})();
+
+// (n-b) 액션 순서: 선부터 시계방향, 폴드하면 그 좌석을 건너뛴다
+(function () {
+  let s = open3();
+  assert('(n-b1) 1라운드 선 = P0', s.toAct === 0);
+  s = step(s, 0, { type: 'bbing' });
+  assert('(n-b2) 삥 후 차례는 시계방향 다음(P1)', s.toAct === 1 && s.pot === 40);
+  assert('(n-b3) 차례가 아닌 좌석(P2)의 액션은 거부',
+    !!Poker.apply(s, 2, { type: 'call' }).error);
+  s = step(s, 1, { type: 'call' });
+  assert('(n-b4) 두 명이 콜해도 P2 가 남았으면 라운드가 끝나지 않는다',
+    s.toAct === 2 && s.round === 1 && s.pot === 50);
+  s = step(s, 2, { type: 'call' });
+  assert('(n-b5) 전원 콜 → 라운드 종료 + 5번째 카드(오픈) 배분',
+    s.round === 2 && s.pot === 60 && s.street === 5 &&
+    s.hands.every((h) => h.cards.length === 4 && h.cards[3].open === true));
+  assert('(n-b6) 2라운드 선도 오픈 최고(♠A♠K) 좌석', s.toAct === 0);
+
+  s = step(s, 0, { type: 'half' });          // 콜0 + 팟30 = 30
+  assert('(n-b7) 하프 = 팟의 절반(30) → 팟 90', s.pot === 90 && s.toAct === 1);
+  s = step(s, 1, { type: 'die' });
+  assert('(n-b8) 다이한 좌석은 순서에서 빠진다 (P1 → P2 로 건너뜀)',
+    s.folded[1] === true && s.toAct === 2 &&
+    Poker.activeSeats(s).join(',') === '0,2');
+  s = step(s, 2, { type: 'call' });
+  assert('(n-b9) 남은 두 명이 매칭 → 라운드 종료 / 팟 120', s.pot === 120 && s.round === 3);
+  assert('(n-b10) 폴드한 좌석은 카드를 더 받지 않는다',
+    s.hands[0].cards.length === 5 && s.hands[2].cards.length === 5 &&
+    s.hands[1].cards.length === 4 && s.dealtCount === 17);
+  assert('(n-b11) 폴드한 좌석은 액션할 수 없다',
+    !!Poker.apply(s, 1, { type: 'check' }).error);
+
+  s = step(s, 0, { type: 'check' });
+  s = step(s, 2, { type: 'check' });
+  s = step(s, 0, { type: 'check' });
+  s = step(s, 2, { type: 'check' });
+  assert('(n-b12) 쇼다운: 풀하우스 P0 이 팟 120 획득',
+    Poker.isHandOver(s) === true && s.phase === 'showdown' &&
+    s.result.winner === 0 && s.result.amount === 120 && s.result.split === false);
+  assert('(n-b13) 폴드한 좌석의 패는 평가/공개되지 않는다',
+    s.result.hands[1] === null && s.result.hands[0].cat === 6 && s.result.hands[2].cat === 2);
+  assert('(n-b14) 칩 정산 (1070 / 980 / 950, 총합 3000)',
+    s.chips[0] === 1070 && s.chips[1] === 980 && s.chips[2] === 950 &&
+    s.chips[0] + s.chips[1] + s.chips[2] === 3000);
+  const vw = Poker.viewFor(s, 1);
+  assert('(n-b15) 쇼다운 공개는 폴드하지 않은 좌석만',
+    vw.hands[0].cards.every((c) => c && c.r) &&
+    vw.hands[2].cards.every((c) => c && c.r));
+  assert('(n-b16) 다음 판: 딜러가 시계방향으로 이동 (2 → 0)',
+    Poker.nextHand(s, DECK3).dealer === 0);
+})();
+
+// (n-c) 전원 다이: 마지막 한 명이 팟 전부 (패 비공개)
+(function () {
+  let s = open3();
+  s = step(s, 0, { type: 'half' });
+  s = step(s, 1, { type: 'die' });
+  assert('(n-c1) 한 명이 다이해도 판은 계속된다',
+    s.over === false && s.toAct === 2);
+  s = step(s, 2, { type: 'die' });
+  assert('(n-c2) 마지막 한 명만 남으면 즉시 종료 + 팟 전부 획득',
+    Poker.isHandOver(s) === true && s.phase === 'folded' &&
+    s.result.winner === 0 && s.result.amount === 45 && s.result.revealed === false);
+  assert('(n-c3) 다이 종료는 아무 패도 공개하지 않는다',
+    s.revealed === false &&
+    Poker.viewFor(s, 1).hands[0].cards.some((c) => c === null) &&
+    Poker.viewFor(s, 0).hands[2].cards.some((c) => c === null));
+  assert('(n-c4) 칩 정산 (1020 / 990 / 990)',
+    s.chips.join(',') === '1020,990,990' &&
+    s.chips[0] + s.chips[1] + s.chips[2] === 3000);
+})();
+
+// (n-d) 사이드 팟: 스택 100 / 300 / 1000, 서로 다른 금액으로 올인
+//   최종 기여: P0 100, P1 300, P2 300 (P2 의 초과분은 반환)
+//   층1 = 100 x 3 = 300 (자격 P0,P1,P2) / 층2 = 200 x 2 = 400 (자격 P1,P2)
+(function () {
+  let s = open3([100, 300, 1000], 2);
+  assert('(n-d0) 앤티 후 칩 90 / 290 / 990 / 팟 30',
+    s.chips[0] === 90 && s.chips[1] === 290 && s.chips[2] === 990 && s.pot === 30);
+  s = step(s, 0, { type: 'half' });        // 15 (팟30의 절반)
+  s = step(s, 1, { type: 'ttadang' });     // 콜15 + 30 = 45
+  s = step(s, 2, { type: 'half' });        // 콜45 + 45 = 90
+  s = step(s, 0, { type: 'call' });        // 잔여 75 전부 → 올인 (10 부족)
+  assert('(n-d1) 짧은 스택은 콜만으로 올인 (매칭 부족분은 사이드 팟으로)',
+    s.allIn[0] === true && s.chips[0] === 0 && s.committed[0] === 100);
+  s = step(s, 1, { type: 'ttadang' });     // 콜45 + 90 = 135
+  s = step(s, 2, { type: 'call' });        // 90
+  assert('(n-d2) 1라운드 종료 (반환 없음): 기여 100 / 190 / 190',
+    s.round === 2 && s.committed[0] === 100 && s.committed[1] === 190 &&
+    s.committed[2] === 190 && s.pot === 480);
+  assert('(n-d3) 올인 좌석은 선이 될 수 없다 → 시계방향 다음(P1)', s.toAct === 1);
+  s = step(s, 1, { type: 'half' });        // 잔여 110 전부 → 올인
+  assert('(n-d4) 두 번째 올인', s.allIn[1] === true && s.chips[1] === 0);
+  s = step(s, 2, { type: 'call' });        // 110
+  assert('(n-d5) 액션 가능 좌석이 1명뿐이면 베팅 없이 7장까지 배분 → 쇼다운',
+    Poker.isHandOver(s) === true && s.phase === 'showdown' && s.street === 7);
+  assert('(n-d6) 최종 기여 100 / 300 / 300, 팟 700',
+    s.committed[0] === 100 && s.committed[1] === 300 && s.committed[2] === 300 &&
+    s.result.amount === 700);
+  const pots = s.result.pots;
+  assert('(n-d7) 사이드 팟 2층 생성',
+    pots.length === 2 &&
+    pots[0].amount === 300 && pots[0].eligible.join(',') === '0,1,2' &&
+    pots[1].amount === 400 && pots[1].eligible.join(',') === '1,2', JSON.stringify(pots));
+  assert('(n-d8) 층1(300)은 최강 풀하우스 P0, 층2(400)은 남은 둘 중 강한 P1',
+    pots[0].winners.join(',') === '0' && pots[1].winners.join(',') === '1');
+  assert('(n-d9) 층별 정확한 분배: P0 300 / P1 400 / P2 0',
+    s.result.payouts.join(',') === '300,400,0', s.result.payouts);
+  assert('(n-d10) 최종 칩 300 / 400 / 700 (총합 1400 보존)',
+    s.chips.join(',') === '300,400,700' &&
+    s.chips[0] + s.chips[1] + s.chips[2] === 1400);
+  assert('(n-d11) 여러 층에서 다른 승자가 나오면 단독 승자가 아니다',
+    s.result.winner === null && s.result.split === true);
+  assert('(n-d12) 파산 두 명 → 매치 계속 (칩 보유 2명)', s.matchOver === false);
+})();
+
+// (n-e) 같은 층 안에서의 스플릿 (랭크가 완전히 같은 두 좌석)
+//   P0: 풀하우스 A/K (100 올인) / P1, P2: 투페어 Q,J + 9 (랭크 동일)
+(function () {
+  const DECK3S = [
+    cd(14, SP), cd(12, SP), cd(12, CL),
+    cd(14, HE), cd(12, HE), cd(12, DI),
+    cd(14, DI), cd(11, DI), cd(11, CL),
+    cd(2, CL), cd(3, CL), cd(5, HE),
+    cd(13, SP), cd(11, SP), cd(11, HE),
+    cd(13, HE), cd(9, HE), cd(9, CL),
+    cd(3, DI), cd(8, DI), cd(8, CL)
+  ];
+  let s = open3([100, 300, 1000], 2, DECK3S);
+  s = step(s, 0, { type: 'half' });
+  s = step(s, 1, { type: 'ttadang' });
+  s = step(s, 2, { type: 'half' });
+  s = step(s, 0, { type: 'call' });
+  s = step(s, 1, { type: 'ttadang' });
+  s = step(s, 2, { type: 'call' });
+  s = step(s, 1, { type: 'half' });
+  s = step(s, 2, { type: 'call' });
+  assert('(n-e1) 층1(300)은 P0 단독, 층2(400)은 동점 두 좌석이 분배',
+    s.result.pots[0].winners.join(',') === '0' &&
+    s.result.pots[1].winners.join(',') === '1,2', JSON.stringify(s.result.pots));
+  assert('(n-e2) 스플릿 분배: P0 300 / P1 200 / P2 200',
+    s.result.payouts.join(',') === '300,200,200', s.result.payouts);
+  assert('(n-e3) 칩 총량 보존 (1400)',
+    s.chips[0] + s.chips[1] + s.chips[2] === 1400 &&
+    s.chips.join(',') === '300,200,900');
+})();
+
+// (n-f) 파산/딜러 로테이션: 칩 0 좌석은 다음 판에 앉지 않고 딜러도 건너뛴다
+(function () {
+  // 배분 순서 [P1, P2, P0] (dealer=0)
+  //  P0: ♠A ♥A ♦A ♣2(버림) + ♠K ♥K ♦4 -> 풀하우스
+  //  P1: ♠2 ♥4 ♦6 ♣8(버림) + ♠9 ♥J ♦K -> 하이카드 (칩 20 뿐)
+  //  P2: ♠3 ♥5 ♦7 ♣9(버림) + ♠Q ♥10 ♦2 -> 하이카드
+  const DECKB = [
+    cd(2, SP), cd(3, SP), cd(14, SP),
+    cd(4, HE), cd(5, HE), cd(14, HE),
+    cd(6, DI), cd(7, DI), cd(14, DI),
+    cd(8, CL), cd(9, CL), cd(2, CL),
+    cd(9, SP), cd(12, SP), cd(13, SP),
+    cd(11, HE), cd(10, HE), cd(13, HE),
+    cd(13, DI), cd(2, DI), cd(4, DI)
+  ];
+  let s = Poker.createHand({ players: 3, deckOrder: DECKB, chips: [1000, 20, 1000], dealer: 0 });
+  assert('(n-f0) 딜러 다음 좌석(P1)부터 배분', s.hands[1].cards[0].r === 2 && s.dealer === 0);
+  s = step(s, 1, { type: 'discard', index: 3 });
+  s = step(s, 2, { type: 'discard', index: 3 });
+  s = step(s, 0, { type: 'discard', index: 3 });
+  s = step(s, 0, { type: 'open', index: 0 });   // ♠A
+  s = step(s, 1, { type: 'open', index: 2 });   // ♦6
+  s = step(s, 2, { type: 'open', index: 2 });   // ♦7
+  s = step(s, 0, { type: 'bbing' });            // 10
+  s = step(s, 1, { type: 'call' });             // 잔여 10 → 올인
+  assert('(n-f1) 앤티 후 잔여 10 을 콜하면 올인', s.allIn[1] === true && s.chips[1] === 0);
+  s = step(s, 2, { type: 'call' });
+  let guard = 0;
+  while (!s.over && guard++ < 12) s = step(s, s.toAct, { type: 'check' });
+  assert('(n-f2) 올인 좌석이 남아 있어도 나머지는 계속 베팅한다', s.over === true);
+  assert('(n-f3) P1 파산 (칩 0) + 파산 로그',
+    s.chips[1] === 0 && s.log.some((e) => e.t === 'bust' && e.p === 1));
+  assert('(n-f4) 칩 보유 2명 → 매치 계속', s.matchOver === false);
+  const n = Poker.nextHand(s, DECKB);
+  assert('(n-f5) 딜러는 칩이 없는 좌석을 건너뛴다 (0 → 2)', n.dealer === 2, n.dealer);
+  assert('(n-f6) 파산 좌석은 다음 판에 앉지 않는다 (카드/앤티 없음)',
+    n.out[1] === true && n.folded[1] === true &&
+    n.hands[1].cards.length === 0 && n.pot === 20);
+  assert('(n-f7) 파산 좌석을 건너뛰고 배분 (딜러 2 → P0 부터)',
+    n.hands[0].cards.length === 4 && n.hands[2].cards.length === 4 &&
+    n.dealtCount === 8);
+  assert('(n-f8) 파산 좌석은 액션할 수 없다', !!Poker.apply(n, 1, { type: 'discard', index: 0 }).error);
+})();
+
+// (n-g) 매치 종료: 칩을 가진 좌석이 1명만 남으면 최종 우승
+(function () {
+  const DECKC = [
+    cd(2, SP), cd(14, SP),
+    cd(3, HE), cd(14, HE),
+    cd(4, DI), cd(14, DI),
+    cd(5, CL), cd(2, CL),
+    cd(7, SP), cd(13, SP),
+    cd(9, HE), cd(13, HE),
+    cd(11, DI), cd(3, DI)
+  ];
+  // P1 은 이미 파산(칩 0), P2 는 앤티로 올인이 되는 10칩
+  let s = Poker.createHand({ players: 3, deckOrder: DECKC, chips: [500, 0, 10], dealer: 0 });
+  assert('(n-g1) 앤티로 올인 → 팟 20 (파산 좌석은 앤티 없음)',
+    s.pot === 20 && s.allIn[2] === true && s.chips[2] === 0 && s.out[1] === true);
+  s = step(s, 2, { type: 'discard', index: 3 });
+  s = step(s, 0, { type: 'discard', index: 3 });
+  s = step(s, 2, { type: 'open', index: 0 });
+  s = step(s, 0, { type: 'open', index: 0 });
+  assert('(n-g2) 액션 가능 좌석이 1명 → 베팅 없이 쇼다운까지',
+    Poker.isHandOver(s) === true && s.phase === 'showdown');
+  assert('(n-g3) 남은 한 명이 팟 20 획득 → 최종 우승',
+    s.chips[0] === 510 && s.matchOver === true && s.matchWinner === 0 &&
+    s.log.some((e) => e.t === 'match' && e.winner === 0));
+  assert('(n-g4) 매치 종료 후 nextHand 불가', !!Poker.nextHand(s, DECKC).error);
+})();
+
+// (n-h) 퇴장(leave): 자동 다이 + 남은 칩 제거, 판은 계속된다
+(function () {
+  let s = open3();
+  s = step(s, 0, { type: 'bbing' });
+  const r = Poker.leave(s, 1);
+  assert('(n-h1) 퇴장은 에러가 아니며 로그를 남긴다',
+    !r.error && r.events.some((e) => e.t === 'leave' && e.p === 1));
+  s = r.state;
+  assert('(n-h2) 퇴장 좌석은 다이 처리 + 퇴장 표시 + 칩 제거',
+    s.left[1] === true && s.folded[1] === true && s.chips[1] === 0);
+  assert('(n-h3) 퇴장해도 남은 두 명으로 판이 이어진다',
+    s.over === false && s.toAct === 2 && Poker.activeSeats(s).join(',') === '0,2');
+  s = step(s, 2, { type: 'call' });
+  assert('(n-h4) 퇴장 좌석을 빼고 라운드가 정상 종료된다', s.round === 2 && s.pot === 50);
+  assert('(n-h5) 퇴장 좌석의 중복 처리는 무시된다',
+    Poker.leave(s, 1).events.length === 0);
+  s = step(s, 0, { type: 'die' });
+  assert('(n-h6) 남은 한 명이 팟 획득', s.over === true && s.result.winner === 2);
+  const n = Poker.nextHand(s, DECK3);
+  assert('(n-h7) 퇴장 표시는 다음 판에도 유지된다',
+    n.left[1] === true && n.out[1] === true && n.hands[1].cards.length === 0);
+})();
+
+// (n-i) 6인 테이블도 같은 규칙으로 동작한다
+(function () {
+  const deck = Cards.makeDeck();
+  let s = Poker.createHand({ players: 6, deckOrder: deck, dealer: 5 });
+  assert('(n-i1) 6인: 앤티 60 / 24장 배분 / 딜러 다음(P0) 부터',
+    s.players === 6 && s.pot === 60 && s.dealtCount === 24 &&
+    s.chips.every((c) => c === 990) &&
+    s.hands.every((h) => h.cards.length === 4));
+  for (let i = 0; i < 6; i++) s = step(s, i, { type: 'discard', index: 0 });
+  for (let i = 0; i < 6; i++) s = step(s, i, { type: 'open', index: 0 });
+  assert('(n-i2) 6인: 전원 매장/오픈 후 1라운드', s.phase === 'bet' && s.round === 1);
+  const order = [];
+  let guard = 0;
+  while (s.phase === 'bet' && s.round === 1 && guard++ < 10) {
+    order.push(s.toAct);
+    s = step(s, s.toAct, { type: 'check' });
+  }
+  assert('(n-i3) 6인: 선부터 시계방향으로 6명이 한 번씩 액션',
+    order.length === 6 &&
+    order.every((v, i) => i === 0 || v === (order[i - 1] + 1) % 6), order);
+  assert('(n-i4) 6인: 전원 체크 → 2라운드 + 5번째 카드', s.round === 2 && s.street === 5);
+  assert('(n-i5) 6인 상한 초과 요청은 6인으로 클램프',
+    Poker.createHand({ players: 9 }).players === 6 &&
+    Poker.createHand({ players: 1 }).players === 2);
+})();
+
 console.log('\n결과: ' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail === 0 ? 0 : 1);

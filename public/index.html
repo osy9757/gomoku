@@ -68,6 +68,19 @@
               <label class="rule-opt"><input type="radio" name="game" value="othello" /> 오델로</label>
               <label class="rule-opt"><input type="radio" name="game" value="connect4" /> 사목</label>
               <label class="rule-opt"><input type="radio" name="game" value="matpoker" /> 맞포커</label>
+              <label class="rule-opt"><input type="radio" name="game" value="poker" /> 포커</label>
+            </div>
+          </div>
+
+          <!-- 인원 선택 (로컬 포커 전용 핫시트 2~6인) -->
+          <div class="rule-select seat-select" id="seatCountRow" hidden>
+            <span class="rule-label">인원</span>
+            <div class="rule-options">
+              <label class="rule-opt"><input type="radio" name="seatCount" value="2" /> 2인</label>
+              <label class="rule-opt"><input type="radio" name="seatCount" value="3" checked /> 3인</label>
+              <label class="rule-opt"><input type="radio" name="seatCount" value="4" /> 4인</label>
+              <label class="rule-opt"><input type="radio" name="seatCount" value="5" /> 5인</label>
+              <label class="rule-opt"><input type="radio" name="seatCount" value="6" /> 6인</label>
             </div>
           </div>
 
@@ -111,6 +124,16 @@
                 <select id="gameChangeSelect" aria-label="바꿀 게임"></select>
                 <button class="btn btn-gray btn-mini" id="btnGameChange" type="button">변경 요청</button>
               </div>
+              <!-- 포커 테이블 방: 참가자 목록 + 방장의 시작 버튼 -->
+              <div class="table-lobby" id="tableLobbyBox" hidden>
+                <div class="table-lobby-head">
+                  <span class="table-lobby-title">참가자</span>
+                  <span class="table-lobby-count" id="tableLobbyCount">1 / 6</span>
+                </div>
+                <div class="table-player-list" id="tablePlayerList"></div>
+                <button class="btn btn-green" id="btnStartMatch" type="button">게임 시작</button>
+                <p class="table-lobby-hint" id="tableLobbyHint">2명 이상 모이면 방장이 시작할 수 있습니다</p>
+              </div>
             </div>
           </div>
         </div>
@@ -136,6 +159,8 @@
             <span class="player-timer" id="timerWhite">00:00</span>
             <span class="player-chips" id="chipsWhite" hidden>🪙 1000</span>
           </div>
+          <!-- 포커(2~6인): 고정 2칸 대신 좌석 수만큼 동적으로 그린다 -->
+          <div class="seat-list" id="seatList" hidden></div>
         </div>
 
         <!-- 게임 정보 -->
@@ -178,18 +203,22 @@
 
         <!-- 카드 게임 테이블 (맞포커). 보드와 배타적으로 표시된다. -->
         <div class="card-table" id="cardTable" hidden>
-          <div class="ct-seat ct-opp">
+          <div class="ct-seat ct-opp" id="ctDuoOpp">
             <div class="ct-seat-head">
               <span class="ct-name" id="ctOppName">플레이어 2</span>
               <span class="ct-chips" id="ctOppChips">🪙 1000</span>
             </div>
             <div class="ct-cards" id="ctOppCards"></div>
           </div>
+          <!-- 포커(N인): 상대 좌석 포드 그리드 -->
+          <div class="ct-opps" id="ctOpps" hidden></div>
           <div class="ct-center">
             <span class="ct-pot" id="ctPot">팟 0</span>
             <span class="ct-phase" id="ctPhase"></span>
           </div>
-          <div class="ct-seat ct-me">
+          <!-- 포커(N인): 내 좌석 포드 -->
+          <div class="ct-mine" id="ctMine" hidden></div>
+          <div class="ct-seat ct-me" id="ctDuoMe">
             <div class="ct-cards" id="ctMyCards"></div>
             <div class="ct-seat-head">
               <span class="ct-name" id="ctMyName">플레이어 1</span>

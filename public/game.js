@@ -19,11 +19,19 @@
   var OTHELLO_DOTS = [[2, 2], [2, 6], [6, 2], [6, 6]];
 
   // 지원 종목 (순서 = 선택 UI 표시 순서)
-  var GAMES = ['omok', 'othello', 'connect4', 'matpoker'];
-  var GAME_LABEL = { omok: '오목', othello: '오델로', connect4: '사목', matpoker: '맞포커' };
+  var GAMES = ['omok', 'othello', 'connect4', 'matpoker', 'poker'];
+  var GAME_LABEL = {
+    omok: '오목', othello: '오델로', connect4: '사목',
+    matpoker: '맞포커', poker: '포커'
+  };
   // 카드 게임: 보드 대신 카드 테이블(#cardTable)을 쓰는 종목
-  var CARD_GAMES = ['matpoker'];
+  var CARD_GAMES = ['matpoker', 'poker'];
   function isCardGame(g) { return CARD_GAMES.indexOf(g || state.game) !== -1; }
+  // 테이블 게임: 좌석이 2~6인인 종목 (온라인은 좌석제 방)
+  function isTableGame(g) { return (g || state.game) === 'poker'; }
+  // '게임 바꾸기'로 고를 수 있는 종목 (포커는 좌석제라 2인 방에서 못 바꾼다)
+  var CHANGEABLE_GAMES = GAMES.filter(function (g) { return g !== 'poker'; });
+  var SEAT_MIN = 2, SEAT_MAX = 6, SEAT_DEFAULT = 3;
 
   // 현재 게임의 규칙 모듈
   function curMod() {
@@ -47,18 +55,40 @@
   function otherColor(c) { return c === BLACK ? WHITE : BLACK; }
   // 게임 종류 관련 라벨 (게임 바꾸기 UI 공용)
   function normGame(g) { return GAMES.indexOf(g) !== -1 ? g : 'omok'; }
-  // 종목이 3개이므로 "반대 종목"은 하나가 아니라 목록이다.
+  // 종목이 여러 개이므로 "반대 종목"은 하나가 아니라 목록이다.
   function otherGames(g) {
     var cur = normGame(g);
-    return GAMES.filter(function (x) { return x !== cur; });
+    return CHANGEABLE_GAMES.filter(function (x) { return x !== cur; });
   }
   function gameName(g) { return GAME_LABEL[normGame(g)]; }
-  // 좌석 이름 (카드 게임 전용). 온라인이면 나/상대, 로컬이면 플레이어 1/2.
+  // 좌석 이름 (카드 게임 전용).
+  //  · 맞포커(2인) — 온라인은 나/상대, 로컬은 플레이어 1/2
+  //  · 포커(2~6인) — 온라인은 내 좌석만 '나', 나머지는 '플레이어 N'
+  //    (좌석이 여러 개라 '상대'로는 구분이 안 된다)
   function seatName(i) {
+    if (isTableGame()) {
+      if (state.online && state.poker.seat === i) return '나';
+      return '플레이어 ' + (i + 1);
+    }
     if (state.online && state.poker.seat !== null) {
       return i === state.poker.seat ? '나' : '상대';
     }
     return '플레이어 ' + (i + 1);
+  }
+  // 공용 로그/모달에서 쓰는 이름 목록 (좌석 수만큼)
+  function seatNames() {
+    var n = pokerSeatCount();
+    var a = [];
+    for (var i = 0; i < n; i++) a.push('플레이어 ' + (i + 1));
+    return a;
+  }
+  // 현재 좌석 수 (뷰가 있으면 뷰 기준, 없으면 로컬 인원 선택 값)
+  function pokerSeatCount() {
+    var v = state.poker.view;
+    if (v && v.players) return v.players;
+    if (!isTableGame()) return 2;
+    if (state.online) return Math.max(1, state.poker.lobby.length);
+    return state.poker.count;
   }
   // 돌 이름: 사목은 빨강/노랑, 카드 게임은 좌석 이름
   // (카드 게임에서는 흑돌/백돌이라는 말이 절대 화면에 나오면 안 된다)
@@ -99,11 +129,18 @@
     poker: {
       local: null,     // 로컬 모드에서만: 엔진 전체 상태 (양쪽 패를 다 안다)
       view: null,      // 화면에 그리는 "시점 뷰" (상대 히든은 null)
-      seat: 0,         // 온라인: 내 좌석(0/1) / 로컬: 항상 0 기준
-      viewer: null,    // 로컬 핫시트: 지금 화면을 봐도 되는 사람 (null = 둘 다 가림)
+      seat: 0,         // 온라인: 내 좌석 / 로컬: 0 기준
+      viewer: null,    // 로컬 핫시트: 지금 화면을 봐도 되는 사람 (null = 전원 가림)
       gateFor: null,   // 가리개가 기다리는 플레이어
       log: [],         // 액션 로그 [{text, seq}]
-      seq: 0           // 판 안에서의 로그 번호 (판이 바뀌면 1부터)
+      seq: 0,          // 판 안에서의 로그 번호 (판이 바뀌면 1부터)
+      // 포커(2~6인) 전용
+      count: SEAT_DEFAULT,  // 로컬 핫시트 인원 (2~6)
+      lobby: [],       // 온라인 테이블 방 참가자 [{seat,name,isHost,chips}]
+      hostSeat: 0,     // 온라인: 방장 좌석
+      isHost: false,   // 온라인: 내가 방장인가
+      canStart: false, // 온라인: 지금 시작할 수 있는가
+      tableStarted: false  // 온라인: 매치가 시작됐는가
     },
     // online
     ws: null,
@@ -660,8 +697,63 @@
   function syncPokerTurn() {
     var v = state.poker.view;
     state.gameOver = !!(v && v.over);
+    // 좌석이 2개인 경우에만 흑/백 두 칸짜리 사이드바에 대응시킨다.
+    // 포커(2~6인)는 좌석 목록을 따로 그리므로 turn 을 건드리지 않는다.
+    if (isTableGame()) return;
     var actor = pokerActor(v);
     if (actor !== null) state.turn = actor === 1 ? WHITE : BLACK;
+  }
+
+  // 판/매치 결과 한 줄 요약 (포커 전용 — 좌석이 여럿이라 문구가 다르다)
+  function pokerResultShort(v) {
+    if (!v || !v.over || !v.result) return null;
+    if (v.matchOver) {
+      return (v.matchWinner === null ? '' : seatName(v.matchWinner) + ' ') + '최종 우승';
+    }
+    var r = v.result;
+    if (r.split) return '팟 분배';
+    if (r.winner === null) return '판 종료';
+    return seatName(r.winner) + ' 승리';
+  }
+
+  // 좌석 목록 (플레이어 정보 카드) — 포커에서 2칸짜리 카드를 대신한다
+  function renderSeatList() {
+    var host = $('seatList');
+    if (!host) return;
+    if (!isTableGame()) { host.innerHTML = ''; return; }
+    var v = state.poker.view;
+    var n = pokerSeatCount();
+    var actor = pokerActor(v);
+    host.innerHTML = '';
+    for (var i = 0; i < n; i++) {
+      var st = pokerSeatState(v, i);
+      var row = document.createElement('div');
+      row.className = 'seat-row' + (actor === i ? ' active' : '') + (st ? ' gone' : '');
+      row.setAttribute('data-seat', String(i));
+      var icon = document.createElement('span');
+      icon.className = 'stone-icon small ' + (i % 2 ? 'white' : 'black');
+      var nm = document.createElement('span');
+      nm.className = 'seat-name';
+      nm.textContent = seatName(i) +
+        (state.online && state.poker.hostSeat === i ? ' (방장)' : '') +
+        (v && v.dealer === i ? ' · 딜러' : '');
+      var sst = document.createElement('span');
+      sst.className = 'seat-state';
+      sst.textContent = st || (actor === i ? '생각 중...' : '');
+      var chips = document.createElement('span');
+      chips.className = 'seat-chips';
+      chips.textContent = '🪙 ' + (v ? v.chips[i] : seatLobbyChips(i));
+      row.appendChild(icon);
+      row.appendChild(nm);
+      row.appendChild(sst);
+      row.appendChild(chips);
+      host.appendChild(row);
+    }
+  }
+  function seatLobbyChips(i) {
+    var list = state.poker.lobby;
+    for (var k = 0; k < list.length; k++) if (list[k].seat === i) return list[k].chips;
+    return P.START_CHIPS;
   }
 
   function updateSidebar() {
@@ -691,9 +783,15 @@
       $('timerWhite').textContent = fmtTime(state.times[WHITE]);
     }
 
-    // 현재 차례
-    $('turnStone').className = 'stone-icon small ' + colorStr(state.turn);
-    $('turnText').textContent = colorName(state.turn);
+    // 현재 차례 (포커는 좌석 이름)
+    if (isTableGame()) {
+      var tac = pokerActor(state.poker.view);
+      $('turnStone').className = 'stone-icon small ' + (tac !== null && tac % 2 ? 'white' : 'black');
+      $('turnText').textContent = tac === null ? '—' : seatName(tac);
+    } else {
+      $('turnStone').className = 'stone-icon small ' + colorStr(state.turn);
+      $('turnText').textContent = colorName(state.turn);
+    }
 
     // 플레이어 카드 이름 (사목은 빨강/노랑)
     $('nameBlack').textContent = colorName(BLACK);
@@ -701,7 +799,11 @@
 
     // 게임 상태
     var gs = '진행 중';
-    if (isCardGame()) {
+    if (isTableGame()) {
+      var tv = state.poker.view;
+      if (tv && tv.over) gs = pokerResultShort(tv);
+      else if (state.online && !state.started) gs = '대기 중';
+    } else if (isCardGame()) {
       var pvw = state.poker.view;
       if (pvw && pvw.over && pvw.result) {
         if (pvw.matchOver) gs = seatName(pvw.matchWinner) + ' 최종 승리';
@@ -742,6 +844,9 @@
     // 돌 바꾸기 / 게임 바꾸기 버튼 (온라인 && 시작됨 && 착수 전 && 진행 중)
     updateSwapButton();
 
+    // 포커 좌석 목록
+    renderSeatList();
+
     // 엑셀 수식바 / 상태바
     updateExcelFormula();
     updateExcelStatusBar();
@@ -752,16 +857,63 @@
   // 셀렉트로 고른 뒤 "변경 요청" 버튼을 누르는 형태로 만든다.
   function updateSwapButton() {
     var card = isCardGame();
+    var table = isTableGame();
     // 돌 바꾸기는 카드 게임에 의미가 없다(좌석 고정) → 항상 숨김
     var canSwap = state.online && state.started && !state.gameOver &&
       state.moves.length === 0 && !card;
     var btn = $('btnSwap');
     if (btn) btn.style.display = canSwap ? '' : 'none';
-    // 게임 바꾸기는 카드 게임 방에서도 계속 열어 둔다 (판이 끝나도 가능)
-    var canChange = card ? (state.online && state.started) : canSwap;
+    // 게임 바꾸기: 포커 테이블 방은 좌석/칩이 종목에 묶여 있어 아예 숨긴다.
+    var canChange = table ? false : (card ? (state.online && state.started) : canSwap);
     var row = $('gameChangeRow');
     if (row) row.style.display = canChange ? '' : 'none';
     syncGameChangeOptions();
+    renderTableLobby();
+  }
+
+  // ── 포커 테이블 로비 (방 안 참가자 목록 + 방장 시작 버튼) ──
+  function renderTableLobby() {
+    var box = $('tableLobbyBox');
+    if (!box) return;
+    var show = isTableGame() && state.online && state.inRoom;
+    box.hidden = !show;
+    if (!show) return;
+    var list = $('tablePlayerList');
+    list.innerHTML = '';
+    state.poker.lobby.forEach(function (p) {
+      var row = document.createElement('div');
+      row.className = 'table-player';
+      row.setAttribute('data-seat', String(p.seat));
+      var nm = document.createElement('span');
+      nm.className = 'tp-name';
+      nm.textContent = p.name + (p.seat === state.poker.seat ? ' (나)' : '');
+      row.appendChild(nm);
+      if (p.isHost) {
+        var h = document.createElement('span');
+        h.className = 'tp-host';
+        h.textContent = '방장';
+        row.appendChild(h);
+      }
+      var c = document.createElement('span');
+      c.className = 'tp-chips';
+      c.textContent = '🪙 ' + p.chips;
+      row.appendChild(c);
+      list.appendChild(row);
+    });
+    $('tableLobbyCount').textContent = state.poker.lobby.length + ' / ' + SEAT_MAX;
+    var btn = $('btnStartMatch');
+    btn.hidden = !state.poker.isHost;
+    btn.disabled = !state.poker.canStart;
+    btn.textContent = state.poker.tableStarted ? '새 경기' : '게임 시작';
+    var hint = $('tableLobbyHint');
+    if (state.poker.isHost) {
+      hint.textContent = state.poker.canStart
+        ? (state.poker.tableStarted ? '' : '준비되면 시작하세요')
+        : (state.poker.tableStarted ? '진행 중입니다' : '2명 이상 모이면 시작할 수 있습니다');
+    } else {
+      hint.textContent = state.poker.tableStarted
+        ? '진행 중입니다' : '방장이 시작하기를 기다리는 중입니다';
+    }
   }
 
   // 셀렉트 옵션을 "현재 종목을 뺀 나머지"로 맞춘다 (선택값은 가능한 한 유지).
@@ -804,6 +956,7 @@
     setColorSelectDisabled(roomLocked());
     applyGameUI();
     applyRuleUI();
+    applySeatCountUI();
   }
 
   // 엑셀 상태바(하단): 게임 상태/차례를 "평범한 엑셀 상태바 텍스트"로 노출
@@ -816,6 +969,8 @@
       var pv = state.poker.view;
       var ptxt;
       if (state.online && !state.started) ptxt = '준비';
+      else if (isTableGame()) ptxt = pokerResultShort(pv) ||
+        (pokerActor(pv) === null ? '준비' : seatName(pokerActor(pv)) + ' 차례');
       else if (pv && pv.over && pv.result) {
         if (pv.matchOver) ptxt = seatName(pv.matchWinner) + ' 최종 승리';
         else if (pv.result.split) ptxt = '무승부 (팟 분배)';
@@ -1213,16 +1368,20 @@
 
   // 뷰/상태에서 "지금 결정해야 하는 사람". 없으면 null.
   // 마스킹된 뷰에서도 동작한다 (카드 장수와 오픈 여부는 공개 정보).
+  // 좌석 수만큼 훑는다. 폴드/파산/퇴장한 좌석은 결정할 것이 없다.
   function pokerActor(v) {
     if (!v || v.over) return null;
+    var n = v.hands.length, i;
     if (v.phase === 'discard') {
-      if (v.hands[0].cards.length === 4) return 0;
-      if (v.hands[1].cards.length === 4) return 1;
+      for (i = 0; i < n; i++) {
+        if (!pokerSeatGone(v, i) && v.hands[i].cards.length === 4) return i;
+      }
       return null;
     }
     if (v.phase === 'open') {
-      if (!pokerHasOpen(v, 0)) return 0;
-      if (!pokerHasOpen(v, 1)) return 1;
+      for (i = 0; i < n; i++) {
+        if (!pokerSeatGone(v, i) && !pokerHasOpen(v, i)) return i;
+      }
       return null;
     }
     if (v.phase === 'bet') return v.toAct;
@@ -1230,6 +1389,16 @@
   }
   function pokerHasOpen(v, i) {
     return v.hands[i].cards.some(function (c) { return c && c.open; });
+  }
+  // 좌석이 이번 판에서 빠졌는가 (다이 / 파산 / 퇴장)
+  function pokerSeatGone(v, i) { return !!(v.folded && v.folded[i]); }
+  // 좌석 상태 라벨 (없으면 null)
+  function pokerSeatState(v, i) {
+    if (!v) return null;
+    if (v.left && v.left[i]) return '퇴장';
+    if (v.out && v.out[i]) return '파산';
+    if (v.folded && v.folded[i]) return '다이';
+    return null;
   }
   // 화면 아래쪽("내 자리")에 놓을 좌석
   function pokerMyIndex() {
@@ -1252,7 +1421,7 @@
   }
   function appendPokerEvents(events) {
     (events || []).forEach(function (ev) {
-      var text = P.describeEvent(ev, ['P1', 'P2']);
+      var text = P.describeEvent(ev, isTableGame() ? seatNames() : ['P1', 'P2']);
       if (!text) return;
       if (ev.t === 'hand') state.poker.seq = 0;
       state.poker.seq += 1;
@@ -1264,6 +1433,8 @@
   function clearCardTable() {
     $('ctOppCards').innerHTML = '';
     $('ctMyCards').innerHTML = '';
+    $('ctOpps').innerHTML = '';
+    $('ctMine').innerHTML = '';
     $('ctActions').innerHTML = '';
     $('ctPot').textContent = '팟 0';
     $('ctPhase').textContent = '';
@@ -1340,7 +1511,7 @@
     var host = $('ctActions');
     host.innerHTML = '';
     if (!v) {
-      addHint(host, state.online ? '상대를 기다리는 중...' : '');
+      addHint(host, state.online ? waitingHint() : '');
       return;
     }
     if (v.over) {
@@ -1352,6 +1523,8 @@
         addHint(host, v.phase === 'discard' ? '버릴 카드를 선택' : '오픈할 카드를 선택');
       } else if (v.me === null) {
         addHint(host, '차례를 넘기는 중...');
+      } else if (isTableGame()) {
+        addHint(host, '다른 참가자가 카드를 고르는 중...');
       } else {
         addHint(host, '상대가 카드를 고르는 중...');
       }
@@ -1379,7 +1552,81 @@
     host.appendChild(s);
   }
 
+  // 온라인 대기 문구 (포커 테이블 방은 방장의 시작을 기다린다)
+  function waitingHint() {
+    if (!isTableGame()) return '상대를 기다리는 중...';
+    if (!state.inRoom) return '';
+    if (state.poker.lobby.length < 2) return '다른 참가자를 기다리는 중...';
+    return state.poker.isHost ? '\'게임 시작\'을 누르면 시작합니다' : '방장이 시작하기를 기다리는 중...';
+  }
+
+  // ── 포커(2~6인) 좌석 포드 ──────────────────────────────
+  // 내 좌석은 항상 아래(#ctMine), 나머지는 시계방향으로 위쪽 그리드에 놓는다.
+  function makeSeatPod(v, i, isMe, actor) {
+    var pod = document.createElement('div');
+    var stateLabel = pokerSeatState(v, i);
+    pod.className = 'ct-pod' + (isMe ? ' me' : '') +
+      (actor === i ? ' turn' : '') + (stateLabel ? ' gone' : '');
+    pod.setAttribute('data-seat', String(i));
+
+    var head = document.createElement('div');
+    head.className = 'ct-pod-head';
+    var name = document.createElement('span');
+    name.className = 'ct-pod-name';
+    name.textContent = seatName(i);
+    head.appendChild(name);
+    if (state.online && state.poker.hostSeat === i) {
+      var host = document.createElement('span');
+      host.className = 'ct-pod-tag';
+      host.textContent = '방장';
+      head.appendChild(host);
+    }
+    if (v && v.dealer === i) {
+      var dl = document.createElement('span');
+      dl.className = 'ct-pod-tag';
+      dl.textContent = '딜러';
+      head.appendChild(dl);
+    }
+    if (stateLabel) {
+      var st = document.createElement('span');
+      st.className = 'ct-pod-state';
+      st.textContent = stateLabel;
+      head.appendChild(st);
+    }
+    var chips = document.createElement('span');
+    chips.className = 'ct-pod-chips';
+    chips.textContent = '🪙 ' +
+      (v ? v.chips[i] : (state.online ? seatLobbyChips(i) : P.START_CHIPS));
+    head.appendChild(chips);
+    pod.appendChild(head);
+
+    var cards = document.createElement('div');
+    cards.className = 'ct-pod-cards';
+    pod.appendChild(cards);
+    if (v) renderHandCards(cards, v, i, isMe, isMe && pokerCanPick(v, i));
+    return pod;
+  }
+
+  function renderPokerTable() {
+    var v = state.poker.view;
+    var me = pokerMyIndex();
+    var n = pokerSeatCount();
+    var actor = pokerActor(v);
+    var opps = $('ctOpps');
+    opps.innerHTML = '';
+    for (var k = 1; k < n; k++) {
+      opps.appendChild(makeSeatPod(v, (me + k) % n, false, actor));
+    }
+    var mine = $('ctMine');
+    mine.innerHTML = '';
+    mine.appendChild(makeSeatPod(v, me, true, actor));
+    $('ctPot').textContent = '팟 ' + (v ? v.pot : 0);
+    $('ctPhase').textContent = pokerPhaseText(v);
+    renderActionBar(v, me);
+  }
+
   function renderCardTable() {
+    if (isTableGame()) { renderPokerTable(); return; }
     var v = state.poker.view;
     var me = pokerMyIndex();
     var opp = me === 0 ? 1 : 0;
@@ -1422,9 +1669,13 @@
     pokerFresh();
     hideModal();                 // 파산 모달에서 '새 게임' 으로 들어올 수 있다
     var deck = K.shuffle(K.makeDeck());
+    var n = isTableGame() ? state.poker.count : 2;
+    var chips = [];
+    for (var i = 0; i < n; i++) chips.push(P.START_CHIPS);
     state.poker.local = P.createHand({
       deckOrder: deck,
-      chips: [P.START_CHIPS, P.START_CHIPS],
+      players: n,
+      chips: chips,
       dealer: 0
     });
     appendPokerEvents(state.poker.local.log);
@@ -1477,7 +1728,10 @@
   // ── 액션 전송 (로컬/온라인 공통 입구) ───────────────────
   function pokerAct(action) {
     if (state.online) {
-      if (!state.started) { toast('상대를 기다리는 중입니다'); return; }
+      if (!state.started) {
+        toast(isTableGame() ? '아직 시작되지 않았습니다' : '상대를 기다리는 중입니다');
+        return;
+      }
       wsSend({ type: 'pokerAction', action: action });
       return;
     }
@@ -1517,6 +1771,19 @@
   // '다음 판' / '새 게임'
   function pokerPlayAgain() {
     var v = state.poker.view;
+    if (isTableGame()) {
+      if (v && v.matchOver) {
+        if (!state.online) { localStartPokerMatch(); return; }
+        if (!state.poker.isHost) { toast('방장만 새 경기를 시작할 수 있습니다'); return; }
+        wsSend({ type: 'newMatch' });
+        hideModal();
+        return;
+      }
+      if (state.online) wsSend({ type: 'pokerAction', action: { type: 'nextHand' } });
+      else localNextPokerHand();
+      hideModal();
+      return;
+    }
     if (state.online) {
       if (v && v.matchOver) {
         wsSend({ type: 'restartRequest' });
@@ -1531,9 +1798,41 @@
     else localNextPokerHand();
   }
 
+  // 포커(2~6인) 결과 모달. 좌석이 여럿이라 문구/칩 요약이 다르다.
+  function showPokerTableModal() {
+    var v = state.poker.view;
+    var r = v.result;
+    var stone = $('modalStone'), title = $('modalTitle'), msg = $('modalMessage');
+    stone.hidden = true;
+    var n = pokerSeatCount();
+    var chipsTxt = [];
+    for (var i = 0; i < n; i++) chipsTxt.push(seatName(i) + ' ' + v.chips[i]);
+    if (v.matchOver) {
+      title.textContent = '최종 우승 — ' +
+        (v.matchWinner === null ? '무승부' : seatName(v.matchWinner));
+      msg.textContent = '칩 ' + chipsTxt.join(' · ');
+      setPlayAgainLabel(state.online && !state.poker.isHost ? '방장 대기' : '새 경기');
+    } else {
+      var winners = [];
+      (r.payouts || []).forEach(function (amt, i) { if (amt > 0) winners.push(i); });
+      if (!winners.length && r.winner !== null) winners = [r.winner];
+      var names = winners.map(seatName).join(', ');
+      var cat = (r.revealed && winners.length === 1 && r.hands[winners[0]])
+        ? ' (' + K.catName(r.hands[winners[0]].cat) + ')' : '';
+      title.textContent = winners.length > 1
+        ? '팟 분배 — ' + names
+        : (names ? names + ' 승리!' + cat : '판 종료');
+      msg.textContent = '팟 ' + r.amount + (r.revealed ? '' : ' (전원 다이)') +
+        ' · 칩 ' + chipsTxt.join(' · ');
+      setPlayAgainLabel('다음 판');
+    }
+    $('resultModal').hidden = false;
+  }
+
   function showPokerResultModal() {
     var v = state.poker.view;
     if (!v || !v.over || !v.result) return;
+    if (isTableGame()) { showPokerTableModal(); return; }
     var stone = $('modalStone'), title = $('modalTitle'), msg = $('modalMessage');
     stone.hidden = true;                 // 카드 게임에는 돌 아이콘이 없다
     var r = v.result;
@@ -1736,8 +2035,16 @@
   // ============================================================
   // 버튼 바인딩
   // ============================================================
+  // 포커 테이블 방: '새 게임/재설정' = 방장의 '새 경기'
+  function tableNewMatch() {
+    if (!state.poker.isHost) { toast('방장만 새 경기를 시작할 수 있습니다'); return; }
+    if (state.poker.lobby.length < 2) { toast('2명 이상이어야 시작할 수 있습니다'); return; }
+    wsSend({ type: state.poker.tableStarted ? 'newMatch' : 'startMatch' });
+  }
+
   $('btnNewGame').addEventListener('click', function () {
     if (state.online) {
+      if (isTableGame()) { tableNewMatch(); return; }
       if (!state.started) { toast('상대를 기다리는 중입니다'); return; }
       wsSend({ type: 'restartRequest' });
       toast('상대에게 새 게임을 요청했습니다');
@@ -1759,6 +2066,7 @@
 
   $('btnReset').addEventListener('click', function () {
     if (state.online) {
+      if (isTableGame()) { tableNewMatch(); return; }
       if (!state.started) { toast('상대를 기다리는 중입니다'); return; }
       wsSend({ type: 'restartRequest' });
       toast('상대에게 새 게임을 요청했습니다');
@@ -1823,9 +2131,11 @@
     ROWS = boardRows();
     COLS = boardCols();
     var card = isCardGame();
+    var table = isTableGame();
     document.body.classList.toggle('game-othello', state.game === 'othello');
     document.body.classList.toggle('game-connect4', state.game === 'connect4');
-    document.body.classList.toggle('game-matpoker', card);
+    document.body.classList.toggle('game-matpoker', state.game === 'matpoker');
+    document.body.classList.toggle('game-poker', table);
 
     // 중앙 영역 교체: 보드 ↔ 카드 테이블. 넘어가는 쪽의 DOM 은 완전히 비운다
     // (돌/셀/힌트가 남아 있으면 다음 종목 화면에 유령처럼 남는다).
@@ -1840,11 +2150,24 @@
       clearCardTable();
       hideGate();
     }
+    // 카드 테이블 내부: 맞포커(고정 2칸) ↔ 포커(좌석 포드) 배타 표시
+    $('ctDuoOpp').hidden = table;
+    $('ctDuoMe').hidden = table;
+    $('ctOpps').hidden = !table;
+    $('ctMine').hidden = !table;
     // 카드 게임은 타이머 대신 칩을 표시한다
     $('timerBlack').hidden = card;
     $('timerWhite').hidden = card;
-    $('chipsBlack').hidden = !card;
-    $('chipsWhite').hidden = !card;
+    $('chipsBlack').hidden = !card && !table;
+    $('chipsWhite').hidden = !card && !table;
+    // 포커는 좌석이 2~6개라 고정 2칸 대신 좌석 목록을 쓴다
+    $('playerBlack').hidden = table;
+    $('playerWhite').hidden = table;
+    $('seatList').hidden = !table;
+    if (!table) $('seatList').innerHTML = '';
+    // 인원 선택은 로컬 포커에서만 (온라인은 방에 앉은 사람 수가 인원이다)
+    var seatRow = $('seatCountRow');
+    if (seatRow) seatRow.hidden = !(table && !state.online);
     // 내 돌(색) 선택은 카드 게임에 의미가 없다 (좌석은 방장=P1 고정)
     var colorRow = $('colorSelectRow');
     if (colorRow) colorRow.hidden = card;
@@ -1856,9 +2179,10 @@
     if (ruleRow) ruleRow.hidden = (state.game !== 'omok');
     var title = document.querySelector('.site-title');
     var sub = document.querySelector('.site-subtitle');
+    var subText = table ? '온라인 2~6인 테이블' : '온라인 2인용 대국';
     if (title) title.textContent = gameName(state.game);
-    if (sub) sub.textContent = '온라인 2인용 대국';
-    document.title = gameName(state.game) + ' · 온라인 2인용 대국';
+    if (sub) sub.textContent = subText;
+    document.title = gameName(state.game) + ' · ' + subText;
     applyGameUI();
     refreshRibbonMenu();   // 엑셀 테마: 규칙 행(수식 탭) 표시 여부가 바뀜
   }
@@ -1916,6 +2240,12 @@
     $('btnCreateRoom').disabled = false;
     $('btnJoinRoom').disabled = false;
     $('joinCodeInput').disabled = false;
+    // 포커 테이블 방 상태도 함께 비운다 (다음 방 입장에 새어 나가지 않게)
+    state.poker.lobby = [];
+    state.poker.isHost = false;
+    state.poker.canStart = false;
+    state.poker.tableStarted = false;
+    state.poker.hostSeat = 0;
     setRoomLocked(false);
   }
 
@@ -1980,6 +2310,7 @@
   function handleServerMessage(msg) {
     switch (msg.type) {
       case 'created':
+        if (isTableGame(msg.game)) { enterTableRoom(msg, true); break; }
         state.myColor = msg.color; // black
         state.roomCode = msg.code;
         state.rule = msg.rule;
@@ -1996,6 +2327,7 @@
         break;
 
       case 'joined':
+        if (isTableGame(msg.game)) { enterTableRoom(msg, false); break; }
         state.myColor = msg.color; // white
         state.roomCode = msg.code;
         state.rule = msg.rule;
@@ -2021,7 +2353,51 @@
         addChatSystem('상대가 입장했습니다. 대국을 시작합니다.');
         break;
 
-      // 맞포커: 서버가 매 변화마다 "내 시점 뷰" + 공용 로그를 내려준다
+      // 포커 테이블: 참가자 목록/방장/시작 가능 여부
+      case 'tableLobby': {
+        if (!isTableGame()) break;
+        state.poker.lobby = msg.players || [];
+        state.poker.hostSeat = typeof msg.hostSeat === 'number' ? msg.hostSeat : 0;
+        state.poker.canStart = !!msg.canStart;
+        state.poker.tableStarted = !!msg.started;
+        var mineRow = state.poker.lobby.filter(function (p) {
+          return p.seat === state.poker.seat;
+        })[0];
+        state.poker.isHost = mineRow ? !!mineRow.isHost : false;
+        if (!msg.started) {
+          // 매치가 없거나 끝나고 로비로 돌아온 상태 → 테이블을 비운다
+          state.started = false;
+          state.poker.view = null;
+          hideModal();
+          $('roomStatusText').textContent = state.poker.lobby.length < 2
+            ? '참가자를 기다리는 중...'
+            : (state.poker.isHost ? '시작할 수 있습니다' : '방장이 시작하기를 기다리는 중...');
+        }
+        if (msg.notice) addChatSystem(msg.notice);
+        renderCardTable();
+        updateSidebar();
+        renderMoveList();
+        break;
+      }
+
+      case 'tableStart':
+        state.started = true;
+        state.poker.seat = msg.seat;
+        state.poker.isHost = !!msg.isHost;
+        state.poker.tableStarted = true;
+        state.poker.log = [];
+        state.poker.seq = 0;
+        hideModal();
+        $('roomStatusText').textContent = '게임 시작! 당신은 플레이어 ' + (msg.seat + 1) + ' 입니다.';
+        addChatSystem(msg.players + '명으로 게임을 시작합니다.');
+        break;
+
+      case 'tableNotice':
+        addChatSystem(msg.text);
+        toast(msg.text);
+        break;
+
+      // 카드 게임: 서버가 매 변화마다 "내 시점 뷰" + 공용 로그를 내려준다
       case 'pokerState':
         if (!isCardGame()) break;
         applyPokerState(msg);
@@ -2045,7 +2421,11 @@
         break;
 
       case 'chat':
-        addChatBubble(msg.text, msg.from === state.myColor);
+        if (isTableGame()) {
+          addChatBubble(msg.text, msg.seat === state.poker.seat, msg.from);
+        } else {
+          addChatBubble(msg.text, msg.from === state.myColor);
+        }
         break;
 
       case 'undoRequest':
@@ -2184,6 +2564,60 @@
     renderMoveList();
   }
 
+  // 포커 테이블 방 입장 (방 만들기 / 참가 공통)
+  function enterTableRoom(msg, created) {
+    state.game = 'poker';
+    state.roomCode = msg.code;
+    state.myColor = null;
+    state.started = false;
+    state.poker.seat = msg.seat | 0;
+    state.poker.isHost = !!msg.isHost;
+    state.poker.tableStarted = false;
+    state.poker.lobby = [];
+    localStorage.setItem('omok_game', 'poker');
+    applyGameLayout();
+    resetGameStateKeepOnline();
+    $('roomInfo').hidden = false;
+    $('roomCodeText').textContent = msg.code;
+    $('roomStatusText').textContent = created
+      ? '방을 만들었습니다. 참가자를 기다리는 중...'
+      : '입장했습니다. 당신은 플레이어 ' + (state.poker.seat + 1) + ' 입니다.';
+    $('btnCreateRoom').disabled = true;
+    $('btnJoinRoom').disabled = true;
+    $('joinCodeInput').disabled = true;
+    setRoomLocked(true);
+  }
+
+  $('btnStartMatch').addEventListener('click', function () {
+    if (!state.online || !isTableGame()) return;
+    if (!state.poker.isHost) { toast('방장만 시작할 수 있습니다'); return; }
+    if (state.poker.lobby.length < 2) { toast('2명 이상이어야 시작할 수 있습니다'); return; }
+    wsSend({ type: state.poker.tableStarted ? 'newMatch' : 'startMatch' });
+  });
+
+  // 로컬 핫시트 인원 (2~6)
+  Array.prototype.slice.call(document.querySelectorAll('input[name="seatCount"]')).forEach(function (radio) {
+    radio.addEventListener('change', function () {
+      var n = parseInt(radio.value, 10);
+      if (!(n >= SEAT_MIN && n <= SEAT_MAX)) return;
+      if (n === state.poker.count) return;
+      state.poker.count = n;
+      localStorage.setItem('omok_seats', String(n));
+      if (isTableGame() && !state.online) {
+        localStartPokerMatch();
+        renderCardTable();
+        updateSidebar();
+        renderMoveList();
+      }
+    });
+  });
+  function applySeatCountUI() {
+    Array.prototype.slice.call(document.querySelectorAll('input[name="seatCount"]')).forEach(function (r) {
+      r.checked = parseInt(r.value, 10) === state.poker.count;
+      r.disabled = roomLocked();
+    });
+  }
+
   // 방 만들기 / 참가
   $('btnCreateRoom').addEventListener('click', function () {
     var rule = document.querySelector('input[name="rule"]:checked').value;
@@ -2244,11 +2678,13 @@
   // ============================================================
   // 채팅
   // ============================================================
-  function addChatBubble(text, isMe) {
+  function addChatBubble(text, isMe, who) {
     var list = $('chatList');
     var b = document.createElement('div');
     b.className = 'chat-bubble ' + (isMe ? 'me' : 'them');
-    b.innerHTML = esc(text);
+    // 좌석이 여럿인 방(포커)에서는 누가 말했는지 함께 보여준다
+    b.innerHTML = (who && !isMe ? '<span class="chat-who">' + esc(who) + '</span>' : '') +
+      esc(text);
     list.appendChild(b);
     list.scrollTop = list.scrollHeight;
   }
@@ -2296,7 +2732,7 @@
     // key,  탭 라벨(마크업의 data-menu 와 매칭), 그 탭에 들어갈 컨트롤(표시 순서)
     { key: 'file',    items: ['btnReset', 'langCard'] },
     { key: 'home',    items: [] },   // 홈: 기본 활성 탭 (아무것도 열지 않음)
-    { key: 'insert',  items: ['gameSelectRow', 'btnNewGame'] },
+    { key: 'insert',  items: ['gameSelectRow', 'seatCountRow', 'btnNewGame'] },
     { key: 'layout',  items: ['themeToggle'] },
     { key: 'formula', items: ['ruleRow'] },
     { key: 'data',    items: ['modeTabs', 'onlineLobby', 'chatCard'] },
@@ -2684,6 +3120,9 @@
     if (savedRule === 'free' || savedRule === 'renju') state.rule = savedRule;
     var savedGame = localStorage.getItem('omok_game');
     if (GAMES.indexOf(savedGame) !== -1) state.game = savedGame;
+    var savedSeats = parseInt(localStorage.getItem('omok_seats'), 10);
+    if (savedSeats >= SEAT_MIN && savedSeats <= SEAT_MAX) state.poker.count = savedSeats;
+    applySeatCountUI();
     var savedTheme = localStorage.getItem('omok_theme');
 
     // 저장된 게임에 맞춰 보드/레이아웃 초기화

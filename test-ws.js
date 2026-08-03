@@ -988,6 +988,368 @@ const isDrop = (r, c) => (m) => m.type === 'move' && m.game === 'connect4' && m.
     await wait(60);
   }
 
+  // ============================================================
+  // 포커 테이블 방 (2~6인)
+  // ============================================================
+  // n명이 앉은 포커 방을 만든다 (첫 번째가 방장 = 좌석 0)
+  async function pokerTable(n) {
+    const host = await open();
+    const hm = collect(host);
+    send(host, { type: 'create', game: 'poker' });
+    const cr = await until(hm, (m) => m.type === 'created');
+    const cl = [{ ws: host, box: hm, seat: cr.seat }];
+    for (let i = 1; i < n; i++) {
+      const w = await open();
+      const box = collect(w);
+      send(w, { type: 'join', code: cr.code });
+      const jn = await until(box, (m) => m.type === 'joined');
+      cl.push({ ws: w, box: box, seat: jn.seat });
+    }
+    // 마지막 입장이 전원에게 반영될 때까지 대기
+    for (const c of cl) await until(c.box, (m) => m.type === 'tableLobby' && m.players.length === n);
+    return { code: cr.code, created: cr, cl: cl };
+  }
+  const lastOf = (box, type) => {
+    for (let i = box.length - 1; i >= 0; i--) if (box[i].type === type) return box[i];
+    return null;
+  };
+  const seatView = (c) => { const m = lastOf(c.box, 'pokerState'); return m ? m.view : null; };
+  // 공개 정보(팟/차례/단계)는 어느 좌석의 뷰에서 읽어도 같다
+  const curView = (cl) => { for (const c of cl) { const v = seatView(c); if (v) return v; } return null; };
+  // 좌석 seat 의 액션을 보내고 전원이 새 상태를 받을 때까지 기다린다
+  async function tableAct(cl, seat, action) {
+    const who = cl.find((c) => c.seat === seat);
+    cl.forEach((c) => { c.box.length = 0; });
+    send(who.ws, { type: 'pokerAction', action: action });
+    for (const c of cl) await until(c.box, (m) => m.type === 'pokerState');
+  }
+  // 매장/오픈 단계를 전원이 통과하도록 진행
+  async function tablePrepare(cl) {
+    let v = seatView(cl[0]);
+    for (const c of cl) {
+      if (v.hands[c.seat].cards.length === 4) await tableAct(cl, c.seat, { type: 'discard', index: 0 });
+    }
+    for (const c of cl) {
+      const cur = seatView(cl[0]);
+      const has = cur.hands[c.seat].cards.some((x) => x && x.open);
+      if (!has && !cur.folded[c.seat]) await tableAct(cl, c.seat, { type: 'open', index: 0 });
+    }
+  }
+
+  // 36. 로비: 생성 / 참가 / 방장 / 시작 조건
+  {
+    const a = await open();
+    const am = collect(a);
+    send(a, { type: 'create', game: 'poker' });
+    const cr = await until(am, (m) => m.type === 'created');
+    assert('포커 방 생성: 좌석 0 + 방장 + 정원 6',
+      cr.game === 'poker' && cr.seat === 0 && cr.isHost === true && cr.capacity === 6, cr);
+    const lb1 = await until(am, (m) => m.type === 'tableLobby');
+    assert('포커 로비: 생성 직후 1명 + 시작 불가',
+      lb1.players.length === 1 && lb1.players[0].name === '플레이어 1' &&
+      lb1.players[0].isHost === true && lb1.players[0].chips === 1000 &&
+      lb1.canStart === false && lb1.started === false, lb1);
+
+    am.length = 0;
+    send(a, { type: 'startMatch' });
+    const e1 = await until(am, (m) => m.type === 'error');
+    assert('포커: 혼자서는 시작할 수 없다', e1.message === '2명 이상이어야 시작할 수 있습니다', e1);
+
+    // B, C 입장 → 매번 전원에게 로비가 방송된다
+    const b = await open(); const bm = collect(b);
+    am.length = 0;
+    send(b, { type: 'join', code: cr.code });
+    const jb = await until(bm, (m) => m.type === 'joined');
+    assert('포커 참가: 다음 빈 좌석 배정', jb.seat === 1 && jb.isHost === false, jb);
+    const lb2a = await until(am, (m) => m.type === 'tableLobby' && m.players.length === 2);
+    assert('포커 로비 방송: 기존 인원에게도 전달 + 2명이면 시작 가능',
+      lb2a.canStart === true && lb2a.notice === '플레이어 2 님이 입장했습니다', lb2a);
+
+    const c = await open(); const cm = collect(c);
+    am.length = 0; bm.length = 0;
+    send(c, { type: 'join', code: cr.code });
+    await until(cm, (m) => m.type === 'joined');
+    const lb3a = await until(am, (m) => m.type === 'tableLobby' && m.players.length === 3);
+    const lb3b = await until(bm, (m) => m.type === 'tableLobby' && m.players.length === 3);
+    assert('포커 로비: 3명 목록이 모두에게 동일하게 전달',
+      JSON.stringify(lb3a.players) === JSON.stringify(lb3b.players) &&
+      lb3a.players.map((p) => p.seat).join(',') === '0,1,2' &&
+      lb3a.hostSeat === 0, lb3a.players);
+
+    // 방장이 아닌 사람은 시작할 수 없다
+    bm.length = 0;
+    send(b, { type: 'startMatch' });
+    const e2 = await until(bm, (m) => m.type === 'error');
+    assert('포커: 방장이 아니면 시작 거부', e2.message === '방장만 시작할 수 있습니다', e2);
+
+    // 방장이 시작 → 전원에게 자기 시점 뷰
+    am.length = 0; bm.length = 0; cm.length = 0;
+    send(a, { type: 'startMatch' });
+    const pa = await until(am, (m) => m.type === 'pokerState');
+    const pb = await until(bm, (m) => m.type === 'pokerState');
+    const pc = await until(cm, (m) => m.type === 'pokerState');
+    assert('포커 시작: 좌석별 뷰 + 3인 앤티 30',
+      pa.seat === 0 && pb.seat === 1 && pc.seat === 2 &&
+      pa.view.players === 3 && pa.view.pot === 30 &&
+      pa.view.chips.join(',') === '990,990,990' && pa.view.phase === 'discard', pa.view.chips);
+    assert('포커 시작: 각자 4장 + 딜러 0',
+      pa.view.hands.every((h) => h.cards.length === 4) && pa.view.dealer === 0);
+    const masked = [[pa, 0], [pb, 1], [pc, 2]].every(([m, seat]) =>
+      m.view.hands[seat].cards.every((x) => x && x.r) &&
+      [0, 1, 2].filter((j) => j !== seat)
+        .every((j) => m.view.hands[j].cards.every((x) => x === null) &&
+          m.view.hands[j].buried === null));
+    assert('포커 마스킹: 각자 자기 카드만 보인다 (3인 전부)', masked);
+    assert('포커 마스킹: 덱은 전송되지 않는다', pa.view.deck === undefined);
+    const lbs = await until(am, (m) => m.type === 'tableLobby' && m.started === true);
+    assert('포커 시작 후 로비: started=true / 추가 시작 불가', lbs.canStart === false);
+
+    // 시작 후 입장 거부
+    const d = await open(); const dm = collect(d);
+    send(d, { type: 'join', code: cr.code });
+    const e3 = await until(dm, (m) => m.type === 'error');
+    assert('포커: 시작된 방에는 입장할 수 없다', e3.message === '이미 시작된 방입니다', e3);
+    d.close();
+
+    // 이미 시작된 방에서 방장이 다시 시작 요청 → 거부
+    am.length = 0;
+    send(a, { type: 'startMatch' });
+    const e4 = await until(am, (m) => m.type === 'error');
+    assert('포커: 진행 중 재시작 거부', e4.message === '이미 시작된 방입니다', e4);
+
+    a.close(); b.close(); c.close();
+    await wait(80);
+  }
+
+  // 37. 정원(6인) 초과 입장 거부
+  {
+    const t = await pokerTable(6);
+    const lb = lastOf(t.cl[0].box, 'tableLobby');
+    assert('포커: 6인까지 착석', lb.players.length === 6 &&
+      lb.players.map((p) => p.seat).join(',') === '0,1,2,3,4,5', lb.players.length);
+    const x = await open(); const xm = collect(x);
+    send(x, { type: 'join', code: t.code });
+    const e = await until(xm, (m) => m.type === 'error');
+    assert('포커: 정원이 차면 입장 거부', e.message === '방이 가득 찼습니다', e);
+    x.close();
+    t.cl.forEach((c) => c.ws.close());
+    await wait(80);
+  }
+
+  // 38. 4인 한 판 전체: 순서 강제 / 마스킹 / 쇼다운 칩 정산
+  {
+    const t = await pokerTable(4);
+    const cl = t.cl;
+    cl.forEach((c) => { c.box.length = 0; });
+    send(cl[0].ws, { type: 'startMatch' });
+    for (const c of cl) await until(c.box, (m) => m.type === 'pokerState');
+    assert('포커 4인: 앤티 40', seatView(cl[0]).pot === 40);
+
+    await tablePrepare(cl);
+    let v = seatView(cl[0]);
+    assert('포커 4인: 전원 매장/오픈 후 1라운드 베팅',
+      v.phase === 'bet' && v.round === 1 && v.toAct !== null, v.phase);
+
+    // 차례가 아닌 좌석의 액션은 거부된다
+    const wrong = cl.find((c) => c.seat !== v.toAct);
+    wrong.box.length = 0;
+    send(wrong.ws, { type: 'pokerAction', action: { type: 'check' } });
+    const inv = await until(wrong.box, (m) => m.type === 'invalid');
+    assert('포커: 차례가 아닌 좌석의 액션 거부',
+      inv.reason === 'poker' && inv.message === '당신의 차례가 아닙니다', inv);
+    assert('포커: 거부된 액션은 브로드캐스트되지 않는다',
+      !wrong.box.some((m) => m.type === 'pokerState'));
+
+    // 전원 체크로 4라운드를 통과 → 쇼다운
+    let guard = 0;
+    const order = [];
+    while (guard++ < 40) {
+      v = curView(cl);
+      if (v.over || v.phase !== 'bet') break;
+      if (v.round === 1) order.push(v.toAct);
+      await tableAct(cl, v.toAct, { type: 'check' });
+    }
+    assert('포커 4인: 1라운드는 선부터 시계방향 4명',
+      order.length === 4 &&
+      order.every((s, i) => i === 0 || s === (order[i - 1] + 1) % 4), order);
+
+    // 쇼다운 직전까지 다른 좌석의 히든이 보이면 안 된다 (라운드별로 확인해 왔다)
+    const end = cl.map((c) => seatView(c));
+    assert('포커 4인: 쇼다운 도달 (팟 40)',
+      end[0].over === true && end[0].phase === 'showdown' && end[0].result.amount === 40,
+      end[0].result);
+    assert('포커 4인: 쇼다운에서 폴드하지 않은 좌석의 패가 전원에게 공개',
+      end.every((v2) => v2.hands.every((h) => h.cards.every((x) => x && x.r))));
+    assert('포커 4인: 매장 카드는 쇼다운 후에도 자기 것만 보인다',
+      end.every((v2, i) => v2.hands.every((h, j) => (j === i) === (h.buried !== null))));
+    const chips = end[0].chips;
+    assert('포커 4인: 칩 총량 보존 (4000)',
+      chips.reduce((x, y) => x + y, 0) === 4000, chips);
+    assert('포커 4인: 팟 40 이 승자(들)에게 정확히 분배',
+      end[0].result.payouts.reduce((x, y) => x + y, 0) === 40 &&
+      end[0].result.payouts.every((p, i) => chips[i] === 990 + p), end[0].result.payouts);
+    assert('포커 4인: 모든 좌석의 뷰에서 칩/팟이 동일',
+      end.every((v2) => v2.chips.join(',') === chips.join(',') && v2.pot === 0));
+
+    // 다음 판: 딜러 이동 + 칩 승계
+    cl.forEach((c) => { c.box.length = 0; });
+    send(cl[2].ws, { type: 'pokerAction', action: { type: 'nextHand' } });
+    for (const c of cl) await until(c.box, (m) => m.type === 'pokerState' && m.view.handNo === 2);
+    const n2 = seatView(cl[0]);
+    assert('포커 4인: 다음 판은 누구나 시작 가능 + 딜러 이동(0 → 1)',
+      n2.dealer === 1 && n2.pot === 40 && n2.handNo === 2 &&
+      n2.chips.every((x, i) => x === chips[i] - 10), n2.chips);
+    cl.forEach((c) => c.ws.close());
+    await wait(80);
+  }
+
+  // 39. 진행 중 퇴장: 자동 다이 + 남은 사람들끼리 계속 / 방장 승계 / 혼자 남으면 로비
+  {
+    const t = await pokerTable(3);
+    const cl = t.cl;
+    cl.forEach((c) => { c.box.length = 0; });
+    send(cl[0].ws, { type: 'startMatch' });
+    for (const c of cl) await until(c.box, (m) => m.type === 'pokerState');
+    await tablePrepare(cl);
+    assert('포커 퇴장 테스트: 베팅 단계 진입', seatView(cl[0]).phase === 'bet');
+
+    // 좌석 2 가 접속을 끊는다
+    cl[0].box.length = 0; cl[1].box.length = 0;
+    cl[2].ws.close();
+    const afterA = await until(cl[0].box, (m) => m.type === 'pokerState' && m.view.left[2] === true);
+    await until(cl[1].box, (m) => m.type === 'pokerState' && m.view.left[2] === true);
+    assert('포커 퇴장: 자동 다이 + 퇴장 표시 + 칩 제거',
+      afterA.view.folded[2] === true && afterA.view.chips[2] === 0 &&
+      afterA.view.over === false, afterA.view.chips);
+    const nt = await until(cl[0].box, (m) => m.type === 'tableNotice');
+    assert('포커 퇴장: 남은 사람에게 퇴장 알림',
+      nt.text === '플레이어 3 님이 퇴장했습니다', nt);
+    const lb = await until(cl[0].box, (m) => m.type === 'tableLobby');
+    assert('포커 퇴장: 로비 목록에서 제거 (2명)',
+      lb.players.length === 2 && lb.started === true, lb.players);
+    assert('포커 퇴장: 퇴장 좌석은 액션 순서에서 빠진다',
+      afterA.view.toAct !== 2 && afterA.view.toAct !== null);
+
+    // 남은 두 명이 판을 마친다
+    let guard = 0;
+    while (guard++ < 40) {
+      const v = curView(cl.slice(0, 2));
+      if (v.over || v.phase !== 'bet') break;
+      await tableAct(cl.slice(0, 2), v.toAct, { type: 'check' });
+    }
+    const fin = seatView(cl[0]);
+    assert('포커 퇴장 후에도 판이 정상적으로 끝난다',
+      fin.over === true && fin.result.amount === 30 &&
+      fin.chips[0] + fin.chips[1] === 2010, fin.chips);
+
+    // 방장(좌석 0) 퇴장 → 남은 최소 좌석이 방장
+    cl[1].box.length = 0;
+    cl[0].ws.close();
+    const mig = await until(cl[1].box, (m) => m.type === 'tableNotice' && /방장/.test(m.text));
+    assert('포커: 방장이 나가면 남은 최소 좌석이 방장이 된다',
+      mig.text === '플레이어 2 님이 방장이 되었습니다', mig);
+    const alone = await until(cl[1].box, (m) => m.type === 'tableLobby' && m.started === false);
+    assert('포커: 혼자 남으면 로비 상태로 복귀 + 안내',
+      alone.notice === '혼자 남아 로비로 돌아왔습니다' &&
+      alone.canStart === false && alone.players.length === 1 &&
+      alone.hostSeat === alone.players[0].seat, alone);
+    cl[1].ws.close();
+    await wait(80);
+  }
+
+  // 40. 채팅 / 게임·돌 바꾸기 차단
+  {
+    const t = await pokerTable(3);
+    const cl = t.cl;
+    cl.forEach((c) => { c.box.length = 0; });
+    send(cl[2].ws, { type: 'chat', text: '안녕하세요' });
+    const ch0 = await until(cl[0].box, (m) => m.type === 'chat');
+    const ch2 = await until(cl[2].box, (m) => m.type === 'chat');
+    assert('포커 채팅: 좌석 이름으로 전원에게 전달',
+      ch0.text === '안녕하세요' && ch0.from === '플레이어 3' && ch0.seat === 2 &&
+      ch2.from === '플레이어 3', ch0);
+
+    cl.forEach((c) => { c.box.length = 0; });
+    send(cl[0].ws, { type: 'gameChangeRequest', game: 'omok' });
+    send(cl[0].ws, { type: 'swapRequest' });
+    send(cl[0].ws, { type: 'restartRequest' });
+    send(cl[0].ws, { type: 'undoRequest' });
+    await wait(120);
+    assert('포커 테이블 방은 게임/돌 바꾸기·무르기·재대국 요청을 무시한다',
+      !cl.some((c) => c.box.some((m) =>
+        ['gameChangeRequest', 'swapRequest', 'restartRequest', 'undoRequest', 'gameChanged'].indexOf(m.type) !== -1)));
+    // 2인 방에서는 포커로 바꿀 수 없다 (테이블 방이라 좌석 구조가 다르다)
+    const duo = await omokRoom();
+    duo.wm.length = 0;
+    send(duo.black, { type: 'gameChangeRequest', game: 'poker' });
+    await wait(120);
+    assert('2인 방: 포커로의 게임 변경 요청은 무시된다',
+      !duo.wm.some((m) => m.type === 'gameChangeRequest'));
+    duo.black.close(); duo.white.close();
+    cl.forEach((c) => c.ws.close());
+    await wait(80);
+  }
+
+  // 41. 최종 우승 + 새 경기 (방장 전용, 칩 리셋, 좌석 유지)
+  {
+    const t = await pokerTable(2);
+    const cl = t.cl;
+    cl.forEach((c) => { c.box.length = 0; });
+    send(cl[0].ws, { type: 'startMatch' });
+    for (const c of cl) await until(c.box, (m) => m.type === 'pokerState');
+
+    // 한쪽이 파산할 때까지: 가능한 한 크게 베팅(하프) → 못 하면 콜 → 체크
+    let guard = 0;
+    while (guard++ < 400) {
+      const v = seatView(cl[0]);
+      if (v.matchOver) break;
+      if (v.over) { await tableAct(cl, 0, { type: 'nextHand' }); continue; }
+      if (v.phase === 'discard') {
+        const s = v.hands.findIndex((h) => h.cards.length === 4);
+        await tableAct(cl, s, { type: 'discard', index: 0 });
+        continue;
+      }
+      if (v.phase === 'open') {
+        const s = v.hands.findIndex((h) => h.cards.length === 3 && !h.cards.some((x) => x && x.open));
+        await tableAct(cl, s, { type: 'open', index: 0 });
+        continue;
+      }
+      if (v.phase === 'bet') {
+        const me = cl.find((c) => c.seat === v.toAct);
+        const opts = seatView(me).options;
+        const pick = ['half', 'call', 'check'].find((tp) =>
+          opts.some((o) => o.type === tp && o.enabled));
+        await tableAct(cl, v.toAct, { type: pick });
+        continue;
+      }
+      break;
+    }
+    const over = seatView(cl[0]);
+    assert('포커 2인 테이블: 한쪽 파산 → 매치 종료 + 최종 우승자',
+      over.matchOver === true && (over.matchWinner === 0 || over.matchWinner === 1) &&
+      over.chips[over.matchWinner] === 2000 &&
+      over.chips[over.matchWinner === 0 ? 1 : 0] === 0, over.chips);
+    const lbEnd = lastOf(cl[0].box, 'tableLobby');
+    assert('포커: 매치 종료 후 새 경기 가능 상태', lbEnd.canStart === true, lbEnd);
+
+    // 방장이 아닌 사람의 새 경기 요청은 거부
+    cl[1].box.length = 0;
+    send(cl[1].ws, { type: 'newMatch' });
+    const e = await until(cl[1].box, (m) => m.type === 'error');
+    assert('포커: 새 경기도 방장 전용', e.message === '방장만 시작할 수 있습니다', e);
+
+    cl.forEach((c) => { c.box.length = 0; });
+    send(cl[0].ws, { type: 'newMatch' });
+    const fresh0 = await until(cl[0].box, (m) => m.type === 'pokerState' && m.view.handNo === 1);
+    const fresh1 = await until(cl[1].box, (m) => m.type === 'pokerState' && m.view.handNo === 1);
+    assert('포커 새 경기: 칩 1000 리셋 + 1판부터 + 좌석 유지',
+      fresh0.seat === 0 && fresh1.seat === 1 &&
+      fresh0.view.chips.join(',') === '990,990' && fresh0.view.matchOver === false &&
+      fresh0.view.dealer === 0, fresh0.view.chips);
+    cl.forEach((c) => c.ws.close());
+    await wait(80);
+  }
+
   console.log('\n결과: ' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail === 0 ? 0 : 1);
 })();
