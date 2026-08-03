@@ -67,13 +67,12 @@
               <label class="rule-opt"><input type="radio" name="game" value="omok" checked /> 오목</label>
               <label class="rule-opt"><input type="radio" name="game" value="othello" /> 오델로</label>
               <label class="rule-opt"><input type="radio" name="game" value="connect4" /> 사목</label>
-              <label class="rule-opt"><input type="radio" name="game" value="matpoker" /> 맞포커</label>
               <label class="rule-opt"><input type="radio" name="game" value="poker" /> 포커</label>
               <label class="rule-opt"><input type="radio" name="game" value="indian" /> 인디언포커</label>
             </div>
           </div>
 
-          <!-- 인원 선택 (로컬 포커 전용 핫시트 2~6인) -->
+          <!-- 인원 선택 (로컬 카드 게임 전용 핫시트 2~6인. 2인 = 헤즈업) -->
           <div class="rule-select seat-select" id="seatCountRow" hidden>
             <span class="rule-label">인원</span>
             <div class="rule-options">
@@ -202,30 +201,16 @@
           </div>
         </div>
 
-        <!-- 카드 게임 테이블 (맞포커). 보드와 배타적으로 표시된다. -->
+        <!-- 카드 게임 테이블 (포커 / 인디언포커). 보드와 배타적으로 표시된다. -->
         <div class="card-table" id="cardTable" hidden>
-          <div class="ct-seat ct-opp" id="ctDuoOpp">
-            <div class="ct-seat-head">
-              <span class="ct-name" id="ctOppName">플레이어 2</span>
-              <span class="ct-chips" id="ctOppChips">🪙 1000</span>
-            </div>
-            <div class="ct-cards" id="ctOppCards"></div>
-          </div>
-          <!-- 포커(N인): 상대 좌석 포드 그리드 -->
+          <!-- 내 좌석을 뺀 나머지 좌석 포드 (2인이면 1칸 = 1:1 배치) -->
           <div class="ct-opps" id="ctOpps" hidden></div>
           <div class="ct-center">
             <span class="ct-pot" id="ctPot">팟 0</span>
             <span class="ct-phase" id="ctPhase"></span>
           </div>
-          <!-- 포커(N인): 내 좌석 포드 -->
+          <!-- 내 좌석 포드 -->
           <div class="ct-mine" id="ctMine" hidden></div>
-          <div class="ct-seat ct-me" id="ctDuoMe">
-            <div class="ct-cards" id="ctMyCards"></div>
-            <div class="ct-seat-head">
-              <span class="ct-name" id="ctMyName">플레이어 1</span>
-              <span class="ct-chips" id="ctMyChips">🪙 1000</span>
-            </div>
-          </div>
           <div class="ct-actions" id="ctActions"></div>
         </div>
       </section>

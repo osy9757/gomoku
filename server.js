@@ -19,18 +19,16 @@ const Poker = require('./public/sevenpoker.js');
 const Indian = require('./public/indianpoker.js');
 
 // 지원 종목 (게임 생성/변경에서 공용으로 쓰는 화이트리스트)
-const GAMES = ['omok', 'othello', 'connect4', 'matpoker', 'poker', 'indian'];
-// 테이블 방(2~6인 좌석제) 종목
+const GAMES = ['omok', 'othello', 'connect4', 'poker', 'indian'];
+// 테이블 방(2~6인 좌석제) 종목 = 카드 엔진을 쓰는 종목.
+// 포커는 2명이 앉으면 그대로 헤즈업(1:1)이 된다 — 예전의 별도 종목이었던
+// '맞포커'는 포커 2인으로 흡수됐다.
 const TABLE_GAMES = ['poker', 'indian'];
 // '게임 바꾸기'로 전환할 수 있는 종목
 // (2인 방 전용 — 테이블 방 종목은 좌석/칩 구조가 달라 제외한다)
 const CHANGEABLE_GAMES = GAMES.filter((g) => TABLE_GAMES.indexOf(g) === -1);
 function normGame(g) {
   return GAMES.indexOf(g) !== -1 ? g : null;
-}
-// 카드 게임(보드가 없는 종목 = 카드 엔진을 쓰는 종목)
-function isCardGame(g) {
-  return g === 'matpoker' || TABLE_GAMES.indexOf(g) !== -1;
 }
 // 테이블 방(2~6인 좌석제)
 const TABLE_CAPACITY = 6;
@@ -59,17 +57,13 @@ function colorToStr(c) {
   return c === Rules.BLACK ? 'black' : 'white';
 }
 
-// ── 맞포커(2인 세븐포커) ──────────────────────────────────
-// 좌석: 흑=0(P1, 방장·첫 딜러), 백=1(P2). 카드 게임에서는 색을 좌석
-// 식별자로만 쓰고 화면에는 절대 흑돌/백돌로 표시하지 않는다(클라 담당).
-function seatOfColor(color) {
-  return color === Rules.BLACK ? 0 : 1;
-}
-// 좌석 번호: 테이블 방은 고정 좌석(p.seat), 2인 방은 색으로 결정된다.
+// ── 카드 게임(포커 / 인디언포커) ──────────────────────────
+// 좌석 번호는 테이블 방의 고정 좌석(p.seat)이다. 2인 방(오목/오델로/사목)에는
+// 카드 게임이 없으므로 색으로 좌석을 유추할 일이 없다.
 function seatOf(room, ws) {
   const me = playerOf(room, ws);
-  if (!me) return null;
-  return isTableRoom(room) ? me.seat : seatOfColor(me.color);
+  if (!me || typeof me.seat !== 'number') return null;
+  return me.seat;
 }
 // 암호학적 난수로 셔플 (엔진은 결정적이고, 무작위성은 서버가 책임진다)
 function secureRandom() {
@@ -80,26 +74,16 @@ function shuffledDeck(game) {
   const base = game === 'indian' ? Indian.makeDeck() : Cards.makeDeck();
   return Cards.shuffle(base, secureRandom);
 }
-// 새 매치(칩 1000 리셋). 방 생성/참가/게임 변경/재대국에서 호출.
-function startPokerMatch(room) {
-  const E = roomEngine(room);
-  room.poker = E.createHand({
-    deckOrder: shuffledDeck(room.game),
-    chips: [E.START_CHIPS, E.START_CHIPS],
-    dealer: 0
-  });
-}
 // 상태가 바뀔 때마다 각 플레이어에게 "그 사람 시점" 만 보낸다.
 // events 는 전원에게 동일하게 가는 공개 로그(히든 카드 정보가 없다).
 function sendPokerState(room, events) {
   if (!room.poker) return;
   const E = roomEngine(room);
   room.players.forEach((p) => {
-    const seat = isTableRoom(room) ? p.seat : seatOfColor(p.color);
     send(p.ws, {
       type: 'pokerState',
-      seat: seat,
-      view: E.viewFor(room.poker, seat),
+      seat: p.seat,
+      view: E.viewFor(room.poker, p.seat),
       events: events || []
     });
   });
@@ -215,14 +199,13 @@ function playerOf(room, ws) {
   return room.players.find((p) => p.ws === ws);
 }
 
+// 2인 방(오목/오델로/사목) 전용 — 테이블 방은 startTableMatch 로 리셋한다.
 function resetRoomBoard(room) {
   var M = gameModule(room.game);
   room.board = M.createBoard();
   room.turn = M.BLACK;
   room.moves = [];
-  // 카드 게임은 보드 대신 엔진 상태를 새 매치로 리셋한다(칩 1000).
-  if (isCardGame(room.game)) startPokerMatch(room);
-  else room.poker = null;
+  room.poker = null;
 }
 
 wss.on('connection', (ws) => {
@@ -280,8 +263,6 @@ wss.on('connection', (ws) => {
         } else {
           creatorColor = pref === 'white' ? Rules.WHITE : Rules.BLACK;
         }
-        // 카드 게임은 "방장 = P1 = 첫 딜러" 가 고정이라 색 선택을 무시한다.
-        if (isCardGame(game)) creatorColor = Rules.BLACK;
         const code = genCode();
         const room = {
           code: code,
@@ -363,11 +344,6 @@ wss.on('connection', (ws) => {
           game: room.game,
           turn: 'black'
         });
-        // 카드 게임은 두 번째 플레이어가 들어온 시점에 첫 판을 돌린다.
-        if (isCardGame(room.game)) {
-          startPokerMatch(room);
-          sendPokerState(room, room.poker.log.slice());
-        }
         break;
       }
 
@@ -394,11 +370,11 @@ wss.on('connection', (ws) => {
         break;
       }
 
-      // ── 카드 게임 액션 (맞포커 / 포커 / 인디언포커 공용) ──
+      // ── 카드 게임 액션 (포커 / 인디언포커 공용) ──
       // 모든 판정은 서버가 한다. 클라이언트는 자기 시점 뷰만 받는다.
       case 'pokerAction': {
         const room = rooms.get(ws.roomCode);
-        if (!room || !isCardGame(room.game)) return;
+        if (!isTableRoom(room)) return;
         const E = roomEngine(room);
         const seat = seatOf(room, ws);
         if (seat === null) return;
@@ -436,7 +412,7 @@ wss.on('connection', (ws) => {
       case 'move': {
         const room = rooms.get(ws.roomCode);
         if (!room) return;
-        if (isCardGame(room.game)) return;  // 카드 게임에는 착수가 없다
+        if (isTableRoom(room)) return;  // 카드 게임에는 착수가 없다
         const me = playerOf(room, ws);
         if (!me) return;
         if (me.color !== room.turn) return; // 내 차례 아님
@@ -550,8 +526,7 @@ wss.on('connection', (ws) => {
       case 'undoRequest': {
         const room = rooms.get(ws.roomCode);
         if (!room) return;
-        if (isCardGame(room.game)) return;  // 카드 게임은 무르기 없음
-        if (isTableRoom(room)) return;
+        if (isTableRoom(room)) return;  // 카드 게임은 무르기 없음
         const opp = opponentOf(room, ws);
         if (opp) send(opp.ws, { type: 'undoRequest' });
         break;
@@ -600,7 +575,6 @@ wss.on('connection', (ws) => {
         const room = rooms.get(ws.roomCode);
         if (!room) return;
         // 카드 게임에는 돌 색이 없다(좌석은 고정) → 요청 자체를 무시
-        if (isCardGame(room.game)) return;
         if (isTableRoom(room)) return;
         const opp = opponentOf(room, ws);
         if (opp) send(opp.ws, { type: 'swapRequest' });
@@ -610,7 +584,6 @@ wss.on('connection', (ws) => {
       case 'swapResponse': {
         const room = rooms.get(ws.roomCode);
         if (!room) return;
-        if (isCardGame(room.game)) return;
         if (isTableRoom(room)) return;
         if (msg.accept) {
           if (room.moves.length > 0) return; // 착수 이후 스왑 거부(무시)
@@ -664,11 +637,9 @@ wss.on('connection', (ws) => {
           if (!target || target === room.game) return; // 대기 중인 요청 없음
           if (room.moves.length > 0) return;           // 착수 이후 변경 거부(무시)
           // 색은 유지(흑 선착), 보드/턴/기보만 새 종목 기준으로 리셋.
-          // 맞포커로/에서 바뀌면 엔진 상태도 새 매치(칩 1000)로 리셋된다.
           room.game = target;
           resetRoomBoard(room);
           broadcast(room, { type: 'gameChanged', game: room.game, turn: 'black' });
-          if (isCardGame(room.game)) sendPokerState(room, room.poker.log.slice());
         } else {
           const opp = opponentOf(room, ws);
           if (opp) send(opp.ws, { type: 'gameChangeRejected' });
@@ -692,13 +663,10 @@ wss.on('connection', (ws) => {
         if (isTableRoom(room)) return;
         if (msg.accept) {
           resetRoomBoard(room);
-          // 색 교대. 단 카드 게임에서 색은 "좌석"이므로 교대하지 않는다
-          // (재대국 = 칩 1000 으로 되돌린 완전히 새로운 매치).
-          if (!isCardGame(room.game)) {
-            room.players.forEach((p) => {
-              p.color = p.color === Rules.BLACK ? Rules.WHITE : Rules.BLACK;
-            });
-          }
+          // 색 교대 후 각자에게 자신의 새 색 전달
+          room.players.forEach((p) => {
+            p.color = p.color === Rules.BLACK ? Rules.WHITE : Rules.BLACK;
+          });
           room.players.forEach((p) => {
             send(p.ws, {
               type: 'restart',
@@ -706,7 +674,6 @@ wss.on('connection', (ws) => {
               turn: 'black'
             });
           });
-          if (isCardGame(room.game)) sendPokerState(room, room.poker.log.slice());
         } else {
           const opp = opponentOf(room, ws);
           if (opp) send(opp.ws, { type: 'restartRejected' });
@@ -765,39 +732,8 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    // 2인 방(오목/오델로/사목): 한 명이 나가면 방을 없앤다.
     const opp = opponentOf(room, ws);
-    const CE = roomEngine(room);
-    // 맞포커: 판이 진행 중이었다면 나간 쪽을 다이 처리해서 남은 사람이
-    // 팟을 가져가게 한 뒤(정산된 뷰를 한 번 더 보낸다) 퇴장을 알린다.
-    if (opp && isCardGame(room.game) && room.poker && !CE.isHandOver(room.poker)) {
-      const leaver = seatOf(room, ws);
-      if (leaver !== null) {
-        const res = CE.apply(room.poker, leaver, { type: 'die' });
-        if (!res.error) {
-          room.poker = res.state;
-        } else {
-          // 베팅 단계가 아니면(매장/오픈 중) 팟을 그대로 남은 사람에게 준다
-          const w = leaver === 0 ? 1 : 0;
-          room.poker.chips[w] += room.poker.pot;
-          room.poker.result = {
-            winner: w, split: false, amount: room.poker.pot,
-            folded: leaver, revealed: false, hands: [null, null]
-          };
-          room.poker.pot = 0;
-          room.poker.over = true;
-          room.poker.phase = 'folded';
-          room.poker.toAct = null;
-          room.poker.log.push({ t: 'fold', p: leaver, winner: w, amount: room.poker.result.amount });
-        }
-        const seat = seatOfColor(opp.color);
-        send(opp.ws, {
-          type: 'pokerState',
-          seat: seat,
-          view: CE.viewFor(room.poker, seat),
-          events: [room.poker.log[room.poker.log.length - 1]]
-        });
-      }
-    }
     if (opp) send(opp.ws, { type: 'opponentLeft' });
     rooms.delete(room.code);
   });
