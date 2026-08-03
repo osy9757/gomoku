@@ -688,6 +688,306 @@ const isDrop = (r, c) => (m) => m.type === 'move' && m.game === 'connect4' && m.
     await wait(60);
   }
 
+  // ============================================================
+  // 31. 맞포커 방: create(game:'matpoker') -> join -> 각자 자기 시점 뷰
+  //     핵심 보안 성질: 쇼다운 전에는 상대 히든 카드가 반드시 null 이다.
+  // ============================================================
+  {
+    const a = await open();
+    const am = collect(a);
+    send(a, { type: 'create', color: 'black', game: 'matpoker' });
+    const cr = await until(am, (m) => m.type === 'created');
+    assert('맞포커 created game 필드', cr.game === 'matpoker' && cr.color === 'black');
+    const b = await open();
+    const bm = collect(b);
+    send(b, { type: 'join', code: cr.code });
+    const jn = await until(bm, (m) => m.type === 'joined');
+    assert('맞포커 joined game 필드', jn.game === 'matpoker' && jn.color === 'white');
+    await until(am, (m) => m.type === 'start');
+
+    // 참가 직후 첫 판이 자동으로 시작되고 각자 자기 시점 뷰를 받는다
+    const sa = await until(am, (m) => m.type === 'pokerState');
+    const sb = await until(bm, (m) => m.type === 'pokerState');
+    assert('맞포커 좌석: 방장=0(P1, 첫 딜러) / 참가자=1',
+      sa.seat === 0 && sb.seat === 1 && sa.view.dealer === 0, { a: sa.seat, b: sb.seat });
+    assert('맞포커 앤티 자동 + 팟 20 + 칩 990',
+      sa.view.pot === 20 && sa.view.chips[0] === 990 && sa.view.chips[1] === 990);
+    assert('맞포커 4장씩 배분 + discard 단계',
+      sa.view.phase === 'discard' &&
+      sa.view.hands[0].cards.length === 4 && sa.view.hands[1].cards.length === 4);
+    assert('맞포커 마스킹: 내 카드는 전부 보인다',
+      sa.view.hands[0].cards.every((c) => c && c.r >= 2 && c.r <= 14));
+    assert('맞포커 마스킹: 상대 히든 카드는 전부 null (양쪽 모두)',
+      sa.view.hands[1].cards.every((c) => c === null) &&
+      sb.view.hands[0].cards.every((c) => c === null),
+      { a: sa.view.hands[1].cards, b: sb.view.hands[0].cards });
+    assert('맞포커 마스킹: 덱은 전송되지 않는다',
+      sa.view.deck === undefined && sb.view.deck === undefined && sa.view.deckLeft === 44);
+    assert('맞포커 마스킹: 상대 매장 카드 자리도 비어 있다',
+      sa.view.hands[1].buried === null && sb.view.hands[0].buried === null);
+
+    // 매장 -> 오픈
+    am.length = 0; bm.length = 0;
+    send(a, { type: 'pokerAction', action: { type: 'discard', index: 0 } });
+    await until(am, (m) => m.type === 'pokerState');
+    send(b, { type: 'pokerAction', action: { type: 'discard', index: 0 } });
+    const afterDiscard = await until(am, (m) => m.type === 'pokerState' && m.view.phase === 'open');
+    assert('맞포커 매장 후 3장 + open 단계',
+      afterDiscard.view.hands[0].cards.length === 3 &&
+      afterDiscard.view.hands[1].cards.length === 3);
+    assert('맞포커 내 매장 카드는 나에게만 보인다',
+      afterDiscard.view.hands[0].buried && afterDiscard.view.hands[0].buried.r >= 2 &&
+      afterDiscard.view.hands[1].buried === null);
+
+    am.length = 0; bm.length = 0;
+    send(a, { type: 'pokerAction', action: { type: 'open', index: 0 } });
+    await until(bm, (m) => m.type === 'pokerState');
+    send(b, { type: 'pokerAction', action: { type: 'open', index: 0 } });
+    const betA = await until(am, (m) => m.type === 'pokerState' && m.view.phase === 'bet');
+    const betB = await until(bm, (m) => m.type === 'pokerState' && m.view.phase === 'bet');
+    assert('맞포커 오픈 후 1라운드 베팅 시작',
+      betA.view.round === 1 && betA.view.toAct !== null);
+    assert('맞포커 오픈 카드는 상대에게 보인다 (나머지 2장은 null)',
+      betA.view.hands[1].cards.filter((c) => c && c.open).length === 1 &&
+      betA.view.hands[1].cards.filter((c) => c === null).length === 2);
+    assert('맞포커 양쪽 뷰의 팟/칩은 동일',
+      betA.view.pot === betB.view.pot && betA.view.chips[0] === betB.view.chips[0]);
+    assert('맞포커 액션 목록(하프 금액 = 콜 + 팟/2)',
+      betA.view.options.length === 6 &&
+      betA.view.options.find((o) => o.type === 'half').amount === 10);
+
+    // 턴 강제: 차례가 아닌 쪽의 액션은 거부된다
+    const first = betA.view.toAct;
+    const wrong = first === 0 ? b : a;
+    const wrongMsgs = first === 0 ? bm : am;
+    wrongMsgs.length = 0;
+    send(wrong, { type: 'pokerAction', action: { type: 'check' } });
+    const inv = await until(wrongMsgs, (m) => m.type === 'invalid');
+    assert('맞포커 차례 아닌 액션 거부', inv.reason === 'poker', inv.message);
+    assert('맞포커 거부된 액션은 브로드캐스트되지 않음',
+      !wrongMsgs.some((m) => m.type === 'pokerState'));
+
+    // 베팅 산식 + 로그 동기화
+    am.length = 0; bm.length = 0;
+    const firstWs = first === 0 ? a : b;
+    const secondWs = first === 0 ? b : a;
+    send(firstWs, { type: 'pokerAction', action: { type: 'bbing' } });
+    const p1 = await until(am, (m) => m.type === 'pokerState');
+    const p1b = await until(bm, (m) => m.type === 'pokerState');
+    assert('맞포커 삥 10 → 팟 30', p1.view.pot === 30 && p1b.view.pot === 30);
+    assert('맞포커 액션 로그가 양쪽에 동일하게 간다',
+      JSON.stringify(p1.events) === JSON.stringify(p1b.events) &&
+      p1.events.some((e) => e.t === 'act' && e.action === 'bbing' && e.amount === 10),
+      p1.events);
+
+    // 다이 → 상대가 팟을 가져가고, 패는 공개되지 않는다
+    am.length = 0; bm.length = 0;
+    send(secondWs, { type: 'pokerAction', action: { type: 'die' } });
+    const endA = await until(am, (m) => m.type === 'pokerState' && m.view.over === true);
+    const endB = await until(bm, (m) => m.type === 'pokerState' && m.view.over === true);
+    assert('맞포커 다이 → 베팅한 쪽이 팟 30 획득',
+      endA.view.result.winner === first && endA.view.result.amount === 30 &&
+      endA.view.result.folded === (first === 0 ? 1 : 0), endA.view.result);
+    assert('맞포커 다이는 패를 공개하지 않는다 (히든 여전히 null)',
+      endA.view.result.revealed === false &&
+      endA.view.hands[1].cards.some((c) => c === null) &&
+      endB.view.hands[0].cards.some((c) => c === null));
+    assert('맞포커 칩 정산 (승자 1010 / 패자 990)',
+      endA.view.chips[first] === 1010 && endA.view.chips[first === 0 ? 1 : 0] === 990,
+      endA.view.chips);
+
+    // 다음 판: 누가 보내도 되고, 두 번 보내도 한 판만 시작된다(멱등)
+    am.length = 0; bm.length = 0;
+    send(b, { type: 'pokerAction', action: { type: 'nextHand' } });
+    const n1 = await until(am, (m) => m.type === 'pokerState' && m.view.over === false);
+    await until(bm, (m) => m.type === 'pokerState' && m.view.over === false);
+    assert('맞포커 다음 판: 딜러 교대 + 칩 승계 + 재앤티',
+      n1.view.dealer === 1 && n1.view.handNo === 2 && n1.view.pot === 20 &&
+      n1.view.chips[first] === 1000 && n1.view.phase === 'discard',
+      { d: n1.view.dealer, c: n1.view.chips });
+    am.length = 0;
+    send(a, { type: 'pokerAction', action: { type: 'nextHand' } });
+    await wait(120);
+    assert('맞포커 다음 판 요청 멱등 (진행 중이면 무시)',
+      !am.some((m) => m.type === 'pokerState'), am.map((m) => m.type));
+
+    a.close(); b.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 32. 맞포커: 쇼다운까지 진행 — 칩이 판을 넘어 이어지고,
+  //     쇼다운 순간에만 상대 히든 카드가 공개된다
+  // ============================================================
+  {
+    const a = await open();
+    const am = collect(a);
+    send(a, { type: 'create', game: 'matpoker' });
+    const cr = await until(am, (m) => m.type === 'created');
+    const b = await open();
+    const bm = collect(b);
+    send(b, { type: 'join', code: cr.code });
+    await until(bm, (m) => m.type === 'pokerState');
+    const seats = { 0: a, 1: b };
+    const boxes = { 0: am, 1: bm };
+    const cur = () => am[am.length - 1] && am[am.length - 1].view;
+
+    const act = async (seat, action) => {
+      am.length = 0; bm.length = 0;
+      send(seats[seat], { type: 'pokerAction', action: action });
+      await until(am, (m) => m.type === 'pokerState');
+      await until(bm, (m) => m.type === 'pokerState');
+    };
+
+    await act(0, { type: 'discard', index: 0 });
+    await act(1, { type: 'discard', index: 0 });
+    await act(0, { type: 'open', index: 0 });
+    await act(1, { type: 'open', index: 0 });
+
+    // 4개 베팅 라운드를 전부 체크-체크로 넘긴다 (팟 20 유지)
+    let guard = 0;
+    while (!cur().over && guard++ < 20) {
+      const v = cur();
+      if (v.phase !== 'bet') break;
+      await act(v.toAct, { type: 'check' });
+      const v2 = cur();
+      if (v2.over || v2.phase !== 'bet') continue;
+      await act(v2.toAct, { type: 'check' });
+    }
+    const endA = am.find((m) => m.type === 'pokerState');
+    const endB = bm.find((m) => m.type === 'pokerState');
+    assert('맞포커 쇼다운 도달 (팟 20, 체크로만 진행)',
+      endA.view.over === true && endA.view.phase === 'showdown' &&
+      endA.view.result.amount === 20, endA.view.result);
+    assert('맞포커 각자 6장 보유 (7장 받아 1장 매장)',
+      endA.view.hands[0].cards.length === 6 && endA.view.hands[1].cards.length === 6);
+    assert('맞포커 쇼다운에서 상대 히든 카드 공개',
+      endA.view.hands[1].cards.every((c) => c && c.r) &&
+      endB.view.hands[0].cards.every((c) => c && c.r));
+    assert('맞포커 쇼다운 후에도 매장 카드는 비공개',
+      endA.view.hands[1].buried === null && endB.view.hands[0].buried === null);
+    assert('맞포커 쇼다운 결과에 양쪽 족보 포함',
+      endA.view.result.hands[0] && endA.view.result.hands[1] &&
+      typeof endA.view.result.hands[0].cat === 'number');
+    const chips = endA.view.chips;
+    assert('맞포커 칩 총량 보존 (2000)', chips[0] + chips[1] === 2000, chips);
+    const winner = endA.view.result.split ? null : endA.view.result.winner;
+    assert('맞포커 승자에게 팟 지급',
+      endA.view.result.split ? (chips[0] === 1000 && chips[1] === 1000)
+        : (chips[winner] === 1010), { w: winner, chips: chips });
+
+    // 다음 판에서 칩이 이어진다
+    am.length = 0; bm.length = 0;
+    send(a, { type: 'pokerAction', action: { type: 'nextHand' } });
+    const n = await until(am, (m) => m.type === 'pokerState' && m.view.handNo === 2);
+    assert('맞포커 판을 넘겨도 칩이 이어진다 (앤티 10 차감)',
+      n.view.chips[0] === chips[0] - 10 && n.view.chips[1] === chips[1] - 10,
+      n.view.chips);
+    a.close(); b.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 33. 맞포커: 상대 퇴장 → 남은 사람이 팟을 가져가고 opponentLeft
+  // ============================================================
+  {
+    const a = await open();
+    const am = collect(a);
+    send(a, { type: 'create', game: 'matpoker' });
+    const cr = await until(am, (m) => m.type === 'created');
+    const b = await open();
+    const bm = collect(b);
+    send(b, { type: 'join', code: cr.code });
+    await until(bm, (m) => m.type === 'pokerState');
+    am.length = 0;
+    b.close();
+    const fin = await until(am, (m) => m.type === 'pokerState' && m.view.over === true);
+    assert('맞포커 상대 퇴장 → 남은 사람이 팟 획득',
+      fin.view.result.winner === 0 && fin.view.result.amount === 20 &&
+      fin.view.chips[0] === 1010, fin.view.result);
+    await until(am, (m) => m.type === 'opponentLeft');
+    assert('맞포커 상대 퇴장 통지', true);
+    a.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 34. 게임 바꾸기: 오목 -> 맞포커 (칩 1000 으로 시작하는 새 매치)
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await omokRoom();
+    send(black, { type: 'gameChangeRequest', game: 'matpoker' });
+    const req = await until(wm, (m) => m.type === 'gameChangeRequest');
+    assert('게임 변경(오목->맞포커): 요청 game 필드', req.game === 'matpoker', req.game);
+    send(white, { type: 'gameChangeResponse', accept: true });
+    const gb = await until(bm, (m) => m.type === 'gameChanged');
+    const gw = await until(wm, (m) => m.type === 'gameChanged');
+    assert('게임 변경(오목->맞포커): 양쪽 gameChanged',
+      gb.game === 'matpoker' && gw.game === 'matpoker', { b: gb.game, w: gw.game });
+    const pb = await until(bm, (m) => m.type === 'pokerState');
+    const pw = await until(wm, (m) => m.type === 'pokerState');
+    assert('게임 변경 후 맞포커 새 매치 (칩 1000 → 앤티 후 990)',
+      pb.view.chips[0] === 990 && pb.view.chips[1] === 990 && pb.view.pot === 20 &&
+      pb.view.handNo === 1, pb.view.chips);
+    assert('게임 변경 후 좌석 유지 (원 흑=P1=딜러)',
+      pb.seat === 0 && pw.seat === 1 && pb.view.dealer === 0);
+    assert('게임 변경 후에도 마스킹 유지',
+      pb.view.hands[1].cards.every((c) => c === null) &&
+      pw.view.hands[0].cards.every((c) => c === null));
+    // 맞포커 방에서는 착수(move)가 무시된다
+    bm.length = 0; wm.length = 0;
+    send(black, { type: 'move', row: 7, col: 7 });
+    await wait(80);
+    assert('맞포커 방에서는 오목 착수가 무시된다',
+      !bm.some((m) => m.type === 'move') && !wm.some((m) => m.type === 'move'));
+    black.close(); white.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 35. 맞포커 재대국: 칩이 1000 으로 리셋된 새 매치, 좌석은 그대로
+  // ============================================================
+  {
+    const a = await open();
+    const am = collect(a);
+    send(a, { type: 'create', game: 'matpoker' });
+    const cr = await until(am, (m) => m.type === 'created');
+    const b = await open();
+    const bm = collect(b);
+    send(b, { type: 'join', code: cr.code });
+    await until(bm, (m) => m.type === 'pokerState');
+    // 칩을 움직여 둔다 (P1 매장/오픈 후 다이)
+    const play = async (ws, box, action) => {
+      box.length = 0;
+      send(ws, { type: 'pokerAction', action: action });
+      await until(box, (m) => m.type === 'pokerState');
+    };
+    await play(a, am, { type: 'discard', index: 0 });
+    await play(b, bm, { type: 'discard', index: 0 });
+    await play(a, am, { type: 'open', index: 0 });
+    await play(b, bm, { type: 'open', index: 0 });
+    const v = am[am.length - 1].view;
+    await play(v.toAct === 0 ? a : b, v.toAct === 0 ? am : bm, { type: 'die' });
+    const afterFold = am[am.length - 1].view;
+    assert('맞포커 재대국 전: 칩이 1000 이 아니다',
+      afterFold.chips[0] !== 1000 || afterFold.chips[1] !== 1000, afterFold.chips);
+
+    am.length = 0; bm.length = 0;
+    send(a, { type: 'restartRequest' });
+    await until(bm, (m) => m.type === 'restartRequest');
+    send(b, { type: 'restartResponse', accept: true });
+    const ra = await until(am, (m) => m.type === 'restart');
+    const pa = await until(am, (m) => m.type === 'pokerState');
+    const pbb = await until(bm, (m) => m.type === 'pokerState');
+    assert('맞포커 재대국: 좌석(색)은 교대하지 않는다',
+      ra.color === 'black' && pa.seat === 0 && pbb.seat === 1, ra.color);
+    assert('맞포커 재대국: 칩 1000 리셋 + 1판부터 다시',
+      pa.view.chips[0] === 990 && pa.view.chips[1] === 990 &&
+      pa.view.handNo === 1 && pa.view.dealer === 0, pa.view.chips);
+    a.close(); b.close();
+    await wait(60);
+  }
+
   console.log('\n결과: ' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail === 0 ? 0 : 1);
 })();

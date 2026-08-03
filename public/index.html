@@ -67,6 +67,7 @@
               <label class="rule-opt"><input type="radio" name="game" value="omok" checked /> 오목</label>
               <label class="rule-opt"><input type="radio" name="game" value="othello" /> 오델로</label>
               <label class="rule-opt"><input type="radio" name="game" value="connect4" /> 사목</label>
+              <label class="rule-opt"><input type="radio" name="game" value="matpoker" /> 맞포커</label>
             </div>
           </div>
 
@@ -82,7 +83,7 @@
           <!-- 온라인 로비 (온라인 모드에서만 표시) -->
           <div class="online-lobby" id="onlineLobby" hidden>
             <!-- 내 돌 색 선택 (방 만들기 전) -->
-            <div class="rule-select color-select">
+            <div class="rule-select color-select" id="colorSelectRow">
               <span class="rule-label">내 돌</span>
               <div class="rule-options">
                 <label class="rule-opt"><input type="radio" name="myColor" value="black" checked /> 흑돌</label>
@@ -124,6 +125,7 @@
               <span class="player-status" id="statusBlack">대기 중</span>
             </div>
             <span class="player-timer" id="timerBlack">00:00</span>
+            <span class="player-chips" id="chipsBlack" hidden>🪙 1000</span>
           </div>
           <div class="player-card" id="playerWhite">
             <span class="stone-icon white"></span>
@@ -132,6 +134,7 @@
               <span class="player-status" id="statusWhite">대기 중</span>
             </div>
             <span class="player-timer" id="timerWhite">00:00</span>
+            <span class="player-chips" id="chipsWhite" hidden>🪙 1000</span>
           </div>
         </div>
 
@@ -171,6 +174,29 @@
               <div class="click-overlay" id="clickOverlay"></div>
             </div>
           </div>
+        </div>
+
+        <!-- 카드 게임 테이블 (맞포커). 보드와 배타적으로 표시된다. -->
+        <div class="card-table" id="cardTable" hidden>
+          <div class="ct-seat ct-opp">
+            <div class="ct-seat-head">
+              <span class="ct-name" id="ctOppName">플레이어 2</span>
+              <span class="ct-chips" id="ctOppChips">🪙 1000</span>
+            </div>
+            <div class="ct-cards" id="ctOppCards"></div>
+          </div>
+          <div class="ct-center">
+            <span class="ct-pot" id="ctPot">팟 0</span>
+            <span class="ct-phase" id="ctPhase"></span>
+          </div>
+          <div class="ct-seat ct-me">
+            <div class="ct-cards" id="ctMyCards"></div>
+            <div class="ct-seat-head">
+              <span class="ct-name" id="ctMyName">플레이어 1</span>
+              <span class="ct-chips" id="ctMyChips">🪙 1000</span>
+            </div>
+          </div>
+          <div class="ct-actions" id="ctActions"></div>
         </div>
       </section>
 
@@ -233,7 +259,17 @@
       <span class="modal-stone" id="modalStone"></span>
       <h2 class="modal-title" id="modalTitle">흑돌 승리!</h2>
       <p class="modal-message" id="modalMessage"></p>
-      <button class="btn btn-green" id="btnPlayAgain" type="button"><svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M6 4h8v4a4 4 0 0 1-8 0V4z"/><path d="M6 5H3.5A2.5 2.5 0 0 0 6 8"/><path d="M14 5h2.5A2.5 2.5 0 0 1 14 8"/><line x1="10" y1="12" x2="10" y2="15"/><line x1="7" y1="16.5" x2="13" y2="16.5"/></svg>다시 하기</button>
+      <button class="btn btn-green" id="btnPlayAgain" type="button"><svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M6 4h8v4a4 4 0 0 1-8 0V4z"/><path d="M6 5H3.5A2.5 2.5 0 0 0 6 8"/><path d="M14 5h2.5A2.5 2.5 0 0 1 14 8"/><line x1="10" y1="12" x2="10" y2="15"/><line x1="7" y1="16.5" x2="13" y2="16.5"/></svg><span id="playAgainLabel">다시 하기</span></button>
+    </div>
+  </div>
+
+  <!-- 로컬 핫시트 차례 넘기기 가리개 (카드 게임 전용) -->
+  <div class="gate-backdrop" id="gateOverlay" hidden>
+    <div class="gate-card">
+      <span class="gate-icon">🂠</span>
+      <h2 class="gate-title" id="gateTitle">플레이어 1 차례입니다</h2>
+      <p class="gate-message">본인만 화면을 봐 주세요</p>
+      <button class="btn btn-green" id="btnGateConfirm" type="button">확인</button>
     </div>
   </div>
 
@@ -243,6 +279,8 @@
   <script src="rules.js"></script>
   <script src="othello.js"></script>
   <script src="connect4.js"></script>
+  <script src="cards.js"></script>
+  <script src="sevenpoker.js"></script>
   <script src="game.js"></script>
 </body>
 </html>

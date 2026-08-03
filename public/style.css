@@ -606,6 +606,271 @@ body.theme-excel.game-connect4 {
 .game-change-row .btn { flex: 0 0 auto; white-space: nowrap; }
 body.theme-excel .game-change-row select { border-radius: 2px; border: 1px solid #d4d4d4; }
 
+/* ============================================================
+   맞포커(카드 게임) — 카드 테이블
+   ------------------------------------------------------------
+   보드(.board-flip)와 배타적으로 표시되는 별도 서브트리다.
+   보드처럼 "컨테이너 폭" 에서 크기가 나오므로(--board-max 상한)
+   어떤 브레이크포인트에서도 자기 열을 넘치지 않는다.
+   카드 크기는 flex 로 6장이 한 줄에 균등 분배되어 자동으로 줄어든다.
+   ============================================================ */
+.card-table {
+  width: 100%;
+  max-width: var(--board-max);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 3px solid #5b3d22;
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 50% 22%, #2f7d52 0%, #1e5e3b 62%, #16492e 100%);
+  box-shadow: 0 10px 22px rgba(20, 60, 40, 0.3);
+}
+.ct-seat { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.ct-seat-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; min-width: 0;
+  color: #eaf6ee; font-size: 13px; font-weight: 600;
+}
+.ct-name { overflow-wrap: anywhere; min-width: 0; }
+.ct-chips {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  background: rgba(0, 0, 0, 0.26);
+  border-radius: 12px;
+  padding: 2px 9px;
+}
+.ct-cards {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 2%;
+  min-height: 54px;
+  min-width: 0;
+}
+.ct-center {
+  display: flex; align-items: center; justify-content: center;
+  gap: 10px; flex-wrap: wrap;
+  padding: 2px 0;
+}
+.ct-pot {
+  color: #ffeaa9;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(14px, 3.4vw, 19px);
+  background: rgba(0, 0, 0, 0.28);
+  border-radius: 16px;
+  padding: 3px 14px;
+  white-space: nowrap;
+}
+.ct-phase { color: #cfe8d8; font-size: 12px; overflow-wrap: anywhere; }
+.ct-actions {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  justify-content: center; align-items: center;
+  min-height: 34px;
+}
+.ct-btn {
+  border: none;
+  border-radius: 9px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 700;
+  font-family: var(--font-sans);
+  color: #fff;
+  background: #2f8f5b;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ct-btn:hover:not(:disabled) { filter: brightness(1.1); }
+.ct-btn:disabled { opacity: 0.38; cursor: not-allowed; }
+.ct-btn.danger { background: #a8434a; }
+.ct-hint {
+  color: #ffeaa9; font-size: 13px; font-weight: 600;
+  text-align: center; overflow-wrap: anywhere;
+}
+
+/* ---------- 카드 한 장 ---------- */
+.pcard {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 68px;
+  aspect-ratio: 5 / 7;
+  border-radius: 6px;
+  background: #fff;
+  border: 1px solid #b9b0a2;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.35);
+  color: #1b1b1b;
+  font-family: var(--font-sans);
+  font-weight: 700;
+  line-height: 1;
+  font-size: clamp(9px, 2.4vw, 15px);
+  overflow: hidden;
+  transition: transform 0.12s ease;
+}
+.pcard.red { color: #cc2b3d; }
+.pcard .pc-corner {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+.pcard .pc-corner.tl { top: 6%; left: 8%; }
+.pcard .pc-corner.br { bottom: 6%; right: 8%; transform: rotate(180deg); }
+.pcard .pc-suit { font-size: 0.9em; }
+/* 엑셀 테마에서만 쓰는 '셀 텍스트' (♠A / ###) */
+.pcard .pc-cell { display: none; }
+/* 뒷면: 어두운 패턴 */
+.pcard.back {
+  background:
+    repeating-linear-gradient(45deg, #33487a 0 5px, #22304f 5px 10px);
+  border-color: #16203a;
+}
+.pcard.back .pc-corner { display: none; }
+/* 내 히든 카드: 나에게만 보이고, 살짝 들어 올려 구분한다 */
+.pcard.mine-hidden {
+  border: 2px solid #f2c94c;
+  transform: translateY(-5px);
+}
+.pcard.selectable { cursor: pointer; }
+.pcard.selectable:hover { transform: translateY(-9px); }
+.pcard.mine-hidden.selectable:hover { transform: translateY(-12px); }
+.pcard.won { box-shadow: 0 0 0 2px #ffd34d, 0 2px 6px rgba(0, 0, 0, 0.4); }
+
+/* 플레이어 카드의 칩 표시 (카드 게임에서 타이머 대신) */
+.player-chips {
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* 맞포커: 사이드바 아이콘을 칩처럼 (흑/백 돌로 보이지 않게) */
+body.game-matpoker .stone-icon.black {
+  background: radial-gradient(circle at 35% 30%, #6fd39a 0%, #1d7a4c 72%);
+  box-shadow: inset 0 2px 3px rgba(255, 255, 255, 0.25);
+}
+body.game-matpoker .stone-icon.white {
+  background: radial-gradient(circle at 35% 30%, #ffd98a 0%, #d99a1f 75%);
+  box-shadow: inset 0 -1px 2px rgba(0, 0, 0, 0.12);
+}
+/* 카드 게임에서는 보드 프레임 자리를 비운다 (테이블이 그 자리를 쓴다) */
+body.game-matpoker .board-flip { display: none; }
+
+/* ---------- 로컬 핫시트 가리개 ---------- */
+.gate-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(10, 24, 16, 0.97);
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px;
+  z-index: 130;              /* 결과 모달(100)/토스트(120) 보다 위 */
+}
+.gate-card {
+  background: #fff;
+  border-radius: 18px;
+  padding: clamp(20px, 5vw, 32px) clamp(18px, 6vw, 34px);
+  text-align: center;
+  width: 100%;
+  max-width: 340px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  overflow-wrap: anywhere;
+}
+.gate-icon { font-size: 40px; display: block; margin-bottom: 8px; }
+.gate-title {
+  font-family: var(--font-serif);
+  font-size: clamp(18px, 5vw, 24px);
+  margin: 4px 0 6px;
+}
+.gate-message { color: var(--ink-soft); font-size: 13px; margin: 0 0 18px; }
+
+/* ---------- 엑셀 테마: 카드 테이블 = 흰 시트 ---------- */
+body.theme-excel .card-table {
+  background: #fff;
+  border: 1px solid #d4d4d4;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0 0 8px;
+  gap: 0;
+}
+body.theme-excel .ct-seat-head {
+  color: #333;
+  background: #f3f2f1;
+  border-bottom: 1px solid #d4d4d4;
+  border-top: 1px solid #d4d4d4;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 500;
+}
+body.theme-excel .ct-chips { background: transparent; padding: 0; }
+body.theme-excel .ct-cards { gap: 0; padding: 8px; align-items: stretch; }
+body.theme-excel .ct-center {
+  background: #fff;
+  border-top: 1px solid #d4d4d4;
+  border-bottom: 1px solid #d4d4d4;
+  padding: 4px 8px;
+  justify-content: flex-start;
+}
+body.theme-excel .ct-pot {
+  background: transparent;
+  color: #217346;
+  font-family: Consolas, monospace;
+  border-radius: 0;
+  padding: 0;
+  font-size: 13px;
+}
+body.theme-excel .ct-phase { color: #666; }
+body.theme-excel .ct-actions { padding: 6px 8px 0; min-height: 30px; }
+body.theme-excel .ct-btn {
+  background: #f3f2f1;
+  color: #333;
+  border: 1px solid #d4d4d4;
+  border-radius: 2px;
+  font-weight: 500;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+body.theme-excel .ct-btn:hover:not(:disabled) { background: #e6e6e6; filter: none; }
+body.theme-excel .ct-btn.danger { background: #f3f2f1; color: #a4262c; }
+body.theme-excel .ct-hint { color: #217346; font-size: 12px; }
+/* 카드 = 테두리 셀 + '♠A' 텍스트 (뒷면은 회색 '###' = 숨긴 수식처럼) */
+body.theme-excel .pcard {
+  border-radius: 0;
+  border: 1px solid #d4d4d4;
+  background: #fff;
+  box-shadow: none;
+  aspect-ratio: 5 / 6;
+  max-width: 74px;
+  font-family: Consolas, 'Malgun Gothic', monospace;
+  font-weight: 400;
+  font-size: clamp(9px, 2.4vw, 14px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+body.theme-excel .pcard .pc-corner { display: none; }
+body.theme-excel .pcard .pc-cell { display: block; }
+body.theme-excel .pcard.back {
+  background: #ebebeb;
+  border-color: #d4d4d4;
+  color: #9a9a9a;
+}
+body.theme-excel .pcard.mine-hidden {
+  border: 1px solid #217346;
+  transform: none;
+  background: #f6fbf8;
+}
+body.theme-excel .pcard.selectable:hover { transform: none; background: #eaf5ee; }
+body.theme-excel .pcard.won { box-shadow: none; outline: 2px solid #217346; outline-offset: -2px; }
+body.theme-excel .gate-card { border-radius: 2px; border: 1px solid #d4d4d4; }
+/* 맞포커는 세로로 긴 배치라 폭 상한을 조금 낮춰 한 화면에 들어오게 한다 */
+body.theme-excel.game-matpoker { --board-max: min(560px, max(280px, calc(100vh - 260px))); }
+
 /* ---------- 기보 ---------- */
 .record-card { display: flex; flex-direction: column; }
 .move-list {
@@ -636,6 +901,10 @@ body.theme-excel .game-change-row select { border-radius: 2px; border: 1px solid
   margin-left: auto; font-weight: 700; font-variant-numeric: tabular-nums;
   text-align: right; overflow-wrap: anywhere;
 }
+/* 카드 게임: 기보 자리에 들어가는 액션 로그 한 줄 */
+.log-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.move-row.log-head { font-weight: 700; color: var(--accent-d); }
+body.theme-excel .move-row.log-head { color: #217346; }
 
 /* ---------- 채팅 ---------- */
 .chat-card { display: flex; flex-direction: column; }
@@ -1330,4 +1599,6 @@ body.theme-excel .toast::before {
   .board { transition: none; }
   .stone, .stone.enter, .disc.enter, .disc.flip,
   .c4-disc.enter, .c4-disc.enter.win { animation: none; }
+  .pcard { transition: none; }
+  .pcard.selectable:hover, .pcard.mine-hidden.selectable:hover { transform: none; }
 }
