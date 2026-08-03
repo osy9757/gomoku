@@ -174,5 +174,152 @@ function movesKey(list) {
   assert('(o-g) 32:32 무승부', w === 0 && c.black === 32 && c.white === 32);
 })();
 
+// ============================================================
+// 사목(Connect Four) 규칙 검증
+// 보드 6행 x 7열. 착수는 "열" 선택 -> 그 열의 가장 아래 빈 칸에 떨어진다.
+// 좌표 표기: A-G(열) + 1-6(행, 위→아래). D6 = (row 5, col 3) = 맨 아랫줄
+// ============================================================
+const C4 = require('./public/connect4.js');
+const CB = C4.BLACK, CW = C4.WHITE, CE = C4.EMPTY;
+
+function c4board() { return C4.createBoard(); }
+// 열 순서대로 번갈아 떨어뜨린다. cols = [열...], 시작색 지정
+function c4play(board, cols, startColor) {
+  let color = startColor || CB;
+  let last = null;
+  cols.forEach(function (col) {
+    const res = C4.applyMove(board, col, color);
+    if (!res) throw new Error('사목 테스트: 둘 수 없는 열 ' + col);
+    board = res.board;
+    last = { row: res.row, col: col, color: color };
+    color = color === CB ? CW : CB;
+  });
+  return { board: board, last: last };
+}
+
+// (c-a) 보드 크기 6x7, 초기 전부 빈칸
+(function () {
+  const b = c4board();
+  let empty = true;
+  for (let r = 0; r < 6; r++) for (let c = 0; c < 7; c++) if (b[r][c] !== CE) empty = false;
+  assert('(c-a) 사목 보드 6행 7열 & 초기 공백',
+    C4.ROWS === 6 && C4.COLS === 7 && b.length === 6 && b[0].length === 7 && empty);
+})();
+
+// (c-b) 첫 착수는 맨 아랫줄(row 5)에 떨어진다
+(function () {
+  const b = c4board();
+  const row = C4.dropRow(b, 3);
+  const res = C4.applyMove(b, 3, CB);
+  assert('(c-b) 첫 착수는 바닥(row 5)에 착지 + 원본 불변',
+    row === 5 && res && res.row === 5 && res.board[5][3] === CB && b[5][3] === CE);
+})();
+
+// (c-c) 같은 열에 쌓인다 (아래에서 위로)
+(function () {
+  let b = c4board();
+  const r = c4play(b, [3, 3, 3], CB);
+  b = r.board;
+  assert('(c-c) 같은 열 쌓기 5,4,3',
+    b[5][3] === CB && b[4][3] === CW && b[3][3] === CB && r.last.row === 3);
+})();
+
+// (c-d) 가득 찬 열은 무효 (dropRow -1, applyMove null)
+(function () {
+  let b = c4board();
+  b = c4play(b, [0, 0, 0, 0, 0, 0], CB).board;   // 6개 = 열 가득
+  assert('(c-d) 가득 찬 열 무효',
+    C4.dropRow(b, 0) === -1 && C4.applyMove(b, 0, CB) === null && C4.dropRow(b, 1) === 5);
+})();
+
+// (c-e) 가로 4목 승리 + 승리 칸 4개 반환
+(function () {
+  let b = c4board();
+  // 흑 0,1,2,3 / 백은 다른 열 위쪽에 쌓이지 않도록 6번 열 사용
+  b = c4play(b, [0, 6, 1, 6, 2, 6, 3], CB).board;
+  const cells = C4.checkWinAt(b, 5, 3, CB);
+  const key = cells && cells.map(function (x) { return x.row + ',' + x.col; }).sort().join(' ');
+  assert('(c-e) 가로 4목 승리 + 승리칸',
+    !!cells && cells.length === 4 && key === '5,0 5,1 5,2 5,3');
+})();
+
+// (c-f) 세로 4목 승리
+(function () {
+  let b = c4board();
+  b = c4play(b, [2, 3, 2, 3, 2, 3, 2], CB).board;
+  const cells = C4.checkWinAt(b, 2, 2, CB);
+  const key = cells && cells.map(function (x) { return x.row + ',' + x.col; }).sort().join(' ');
+  assert('(c-f) 세로 4목 승리 + 승리칸',
+    !!cells && cells.length === 4 && key === '2,2 3,2 4,2 5,2');
+})();
+
+// (c-g) 대각 ↗ (오른쪽 위로) 4목 승리
+(function () {
+  let b = c4board();
+  // 흑이 (5,0),(4,1),(3,2),(2,3) 을 만들도록 구성
+  // 열0: 흑            -> (5,0)
+  // 열1: 백,흑          -> (4,1)
+  // 열2: 백,백,흑       -> (3,2)
+  // 열3: 백,흑,백,흑    -> (2,3)
+  const b0 = c4board();
+  const put = function (bd, col, color) { const r = C4.applyMove(bd, col, color); return r.board; };
+  let x = b0;
+  x = put(x, 0, CB);
+  x = put(x, 1, CW); x = put(x, 1, CB);
+  x = put(x, 2, CW); x = put(x, 2, CW); x = put(x, 2, CB);
+  x = put(x, 3, CW); x = put(x, 3, CB); x = put(x, 3, CW); x = put(x, 3, CB);
+  const cells = C4.checkWinAt(x, 2, 3, CB);
+  const key = cells && cells.map(function (v) { return v.row + ',' + v.col; }).sort().join(' ');
+  assert('(c-g) 대각 ↗ 4목 승리', !!cells && cells.length === 4 && key === '2,3 3,2 4,1 5,0');
+})();
+
+// (c-h) 대각 ↘ (오른쪽 아래로) 4목 승리
+(function () {
+  const put = function (bd, col, color) { const r = C4.applyMove(bd, col, color); return r.board; };
+  let x = c4board();
+  // 흑이 (2,0),(3,1),(4,2),(5,3)
+  x = put(x, 0, CW); x = put(x, 0, CW); x = put(x, 0, CW); x = put(x, 0, CB);
+  x = put(x, 1, CW); x = put(x, 1, CW); x = put(x, 1, CB);
+  x = put(x, 2, CW); x = put(x, 2, CB);
+  x = put(x, 3, CB);
+  const cells = C4.checkWinAt(x, 2, 0, CB);
+  const key = cells && cells.map(function (v) { return v.row + ',' + v.col; }).sort().join(' ');
+  assert('(c-h) 대각 ↘ 4목 승리', !!cells && cells.length === 4 && key === '2,0 3,1 4,2 5,3');
+})();
+
+// (c-i) 4목이 아니면 null
+(function () {
+  let b = c4board();
+  b = c4play(b, [0, 6, 1, 6, 2, 6], CB).board;   // 흑 3개 (5,0)(5,1)(5,2)
+  assert('(c-i) 3목은 승리 아님', C4.checkWinAt(b, 5, 2, CB) === null);
+})();
+
+// (c-j) 5목 이상도 승리 (연속 4 이상)
+(function () {
+  const b = c4board();
+  for (let c = 0; c < 5; c++) b[5][c] = CB;
+  const cells = C4.checkWinAt(b, 5, 2, CB);
+  assert('(c-j) 5연속도 승리(4 이상)', !!cells && cells.length === 5);
+})();
+
+// (c-k) 만원(42칸) 무승부 판정
+(function () {
+  const b = c4board();
+  assert('(c-k0) 빈 보드는 isFull=false', C4.isFull(b) === false);
+  for (let r = 0; r < 6; r++) for (let c = 0; c < 7; c++) b[r][c] = (r + c) % 2 ? CB : CW;
+  assert('(c-k) 42칸 만원 -> isFull', C4.isFull(b) === true && C4.legalColumns(b).length === 0);
+})();
+
+// (c-l) legalColumns: 가득 찬 열 제외 + 착지 행 정보
+(function () {
+  let b = c4board();
+  b = c4play(b, [0, 0, 0, 0, 0, 0], CB).board;
+  const ls = C4.legalColumns(b);
+  const cols = ls.map(function (x) { return x.col; }).join(',');
+  const first = ls[0];
+  assert('(c-l) 합법 열 목록(가득 찬 0열 제외) + 착지행',
+    cols === '1,2,3,4,5,6' && first.col === 1 && first.row === 5);
+})();
+
 console.log('\n결과: ' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail === 0 ? 0 : 1);

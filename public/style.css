@@ -497,6 +497,115 @@ body.theme-excel .disc.white { background: #fff; border: 1px solid #999; box-siz
 body.theme-excel .othello-last { box-shadow: none; display: none; }
 body.theme-excel.game-othello .board-inner { background: #fff; }
 
+/* ============================================================
+   사목(Connect Four) — 기본 테마 (파란 보드 + 구멍)
+   ------------------------------------------------------------
+   보드가 정사각이 아니다(7열 x 6행). .board 는 border-box 기준
+   aspect-ratio 를 쓰고 padding 이 5%(=너비의 5%) 이므로,
+   내부(.board-inner)가 정확히 7:6 이 되려면
+     H/W = 0.9 * (6/7) + 0.1 = 6.1/7  ->  aspect-ratio: 70 / 61
+   엑셀 테마(padding 0)에서는 헤더 포함 8:7 = 1.1429 가 이상적인데
+   70/61 = 1.1475 라 차이가 0.4% 라 그대로 쓴다(칸이 사실상 정사각).
+   ============================================================ */
+body.game-connect4 .board { aspect-ratio: 70 / 61; }
+body.game-connect4 .board-inner {
+  background:
+    radial-gradient(circle at 50% 0%, #2a6ad0 0%, transparent 65%),
+    #1e56b0;
+}
+
+/* 사목 돌(디스크) — 구멍을 채우는 빨강/노랑 */
+.c4-disc {
+  position: absolute;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 3;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4), inset 0 -2px 4px rgba(0, 0, 0, 0.22);
+}
+.c4-disc.black {  /* 프로토콜 흑 = 화면상 빨강(선공) */
+  background: radial-gradient(circle at 36% 30%, #f07a72 0%, #d93b3b 55%, #a82424 100%);
+}
+.c4-disc.white {  /* 프로토콜 백 = 화면상 노랑 */
+  background: radial-gradient(circle at 36% 30%, #fff0a8 0%, #f2c93d 55%, #c99b12 100%);
+}
+/* 새로 떨어진 돌만 낙하 애니메이션. --drop-from 은 열 위쪽까지의 거리(px, 음수) */
+@keyframes c4-drop {
+  0% { transform: translate(-50%, calc(-50% + var(--drop-from, -300px))); }
+  100% { transform: translate(-50%, -50%); }
+}
+.c4-disc.enter { animation: c4-drop 0.25s cubic-bezier(0.55, 0.06, 0.68, 0.19); }
+.c4-disc.win {
+  animation: stone-win 0.9s ease-in-out infinite alternate;
+  z-index: 4;
+}
+/* 승리수는 "떨어진 뒤" 펄스가 시작되도록 두 애니메이션을 이어 붙인다 */
+.c4-disc.enter.win {
+  animation:
+    c4-drop 0.25s cubic-bezier(0.55, 0.06, 0.68, 0.19),
+    stone-win 0.9s ease-in-out 0.25s infinite alternate;
+}
+
+/* 마지막 착수 링 (기본 테마) */
+.c4-last {
+  position: absolute;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
+  z-index: 4;
+  pointer-events: none;
+}
+
+/* 사목: 빨강/노랑 아이콘 (플레이어 카드 / 차례 / 기보 공용) */
+body.game-connect4 .stone-icon.black {
+  background: radial-gradient(circle at 35% 30%, #f07a72 0%, #d93b3b 70%);
+  box-shadow: inset 0 2px 3px rgba(255, 255, 255, 0.25);
+}
+body.game-connect4 .stone-icon.white {
+  background: radial-gradient(circle at 35% 30%, #fff0a8 0%, #f2c93d 75%);
+  box-shadow: inset 0 -1px 2px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.06);
+}
+/* 결과 모달 아이콘 (모달은 .page 밖이지만 body 클래스가 걸린다) */
+body.game-connect4 .modal-stone.black { background: radial-gradient(circle at 35% 30%, #f07a72, #d93b3b 72%); }
+body.game-connect4 .modal-stone.white { background: radial-gradient(circle at 35% 30%, #fff0a8, #f2c93d 78%); box-shadow: 0 0 0 1px #d9b64a inset; }
+body.game-connect4 .modal-stone.draw { background: linear-gradient(135deg, #d93b3b 0 50%, #f2c93d 50% 100%); }
+
+/* 사목 엑셀 테마: 납작한 빨강/노랑 + 회색 힌트 점 */
+body.theme-excel .c4-disc {
+  box-shadow: none;
+  background: #d93b3b;
+}
+body.theme-excel .c4-disc.white { background: #f2c93d; }
+body.theme-excel .c4-disc.win { animation: none; box-shadow: 0 0 0 2px #217346; }
+body.theme-excel .c4-last { display: none; }
+body.theme-excel.game-connect4 .board-inner { background: #fff; }
+body.theme-excel.game-connect4 .move-hint { background: rgba(120, 120, 120, 0.4); }
+/* 사목은 가로로 길어 세로 여유가 있다 → 높이 예산을 폭으로 환산해 상한을 잡는다 */
+body.theme-excel.game-connect4 {
+  --board-max: min(760px, max(280px, calc((100vh - 200px) * 1.147)));
+}
+
+/* 게임 바꾸기: 종목 선택 + 요청 버튼 (온라인 방 안에서만 표시) */
+.game-change-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.game-change-row select {
+  flex: 1 1 110px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: var(--font-sans);
+  background: #fff;
+  color: var(--ink);
+}
+.game-change-row .btn { flex: 0 0 auto; white-space: nowrap; }
+body.theme-excel .game-change-row select { border-radius: 2px; border: 1px solid #d4d4d4; }
+
 /* ---------- 기보 ---------- */
 .record-card { display: flex; flex-direction: column; }
 .move-list {
@@ -1219,5 +1328,6 @@ body.theme-excel .toast::before {
 /* ---------- 모션 최소화 ---------- */
 @media (prefers-reduced-motion: reduce) {
   .board { transition: none; }
-  .stone, .stone.enter, .disc.enter, .disc.flip { animation: none; }
+  .stone, .stone.enter, .disc.enter, .disc.flip,
+  .c4-disc.enter, .c4-disc.enter.win { animation: none; }
 }

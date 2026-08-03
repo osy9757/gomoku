@@ -48,6 +48,10 @@ async function room(game, rule) {
 // 오델로 방 하나를 열고 (흑=생성자, 백=참가자) 두 소켓 + 수집기를 돌려준다
 async function othelloRoom() { return room('othello'); }
 async function omokRoom(rule) { return room('omok', rule); }
+// 사목 방
+async function c4Room() { return room('connect4'); }
+// 사목은 같은 열에 여러 번 떨어지므로 착지 행까지 봐야 메시지가 구분된다
+const isDrop = (r, c) => (m) => m.type === 'move' && m.game === 'connect4' && m.row === r && m.col === c;
 
 (async () => {
   // 1. 방 생성
@@ -508,6 +512,178 @@ async function omokRoom(rule) { return room('omok', rule); }
     send(black, { type: 'move', row: 10, col: 10 });
     const ok = await until(wm, isMove(10, 10));
     assert('게임 변경 후 정상 오목 착수', ok.color === 'black', ok.color);
+    black.close(); white.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 24. 사목 방: create(game:'connect4') -> join -> 열 낙하가 양쪽에 동일하게 반영
+  // ============================================================
+  {
+    const c0 = await open();
+    send(c0, { type: 'create', rule: 'renju', color: 'black', game: 'connect4' });
+    const cc = await next(c0);
+    assert('사목 created game 필드', cc.type === 'created' && cc.game === 'connect4' && cc.color === 'black');
+    const c0m = collect(c0);
+    const c1 = await open();
+    const c1m = collect(c1);
+    send(c1, { type: 'join', code: cc.code });
+    const cJoined = await until(c1m, (m) => m.type === 'joined');
+    assert('사목 joined game 필드', cJoined.game === 'connect4' && cJoined.color === 'white');
+    const cStart = await until(c1m, (m) => m.type === 'start');
+    assert('사목 start game 필드', cStart.game === 'connect4');
+    await until(c0m, (m) => m.type === 'start');
+    c0m.length = 0; c1m.length = 0;
+
+    // 흑(빨강) D열(col 3) -> 바닥 row 5
+    send(c0, { type: 'move', col: 3 });
+    const d1 = await until(c0m, isDrop(5, 3));
+    const d1g = await until(c1m, isDrop(5, 3));
+    assert('사목 첫 낙하: 바닥(row 5) + 양쪽 동일',
+      d1.color === 'black' && d1.nextTurn === 'white' &&
+      d1g.row === 5 && d1g.col === 3, { h: d1.row, g: d1g.row });
+    assert('사목 첫 낙하: 승리/무승부 아님', d1.win === false && d1.draw === false);
+
+    // 백(노랑) 같은 열 -> row 4 로 쌓임
+    send(c1, { type: 'move', col: 3 });
+    const d2 = await until(c1m, isDrop(4, 3));
+    await until(c0m, isDrop(4, 3));
+    assert('사목 같은 열 쌓임(row 4)', d2.color === 'white' && d2.nextTurn === 'black', d2.row);
+
+    // 차례 아닌 쪽 착수는 무시
+    c0m.length = 0; c1m.length = 0;
+    send(c1, { type: 'move', col: 1 });
+    await wait(80);
+    assert('사목 차례 아닌 착수 무시', !c0m.some((m) => m.type === 'move'));
+
+    c0.close(); c1.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 25. 사목: 가득 찬 열은 invalid(column-full), 브로드캐스트 없음
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await c4Room();
+    // 0열에 6개 채우기 (흑/백 번갈아)
+    for (let i = 0; i < 6; i++) {
+      const mover = i % 2 === 0 ? black : white;
+      send(mover, { type: 'move', col: 0 });
+      await until(bm, isDrop(5 - i, 0));
+      await until(wm, isDrop(5 - i, 0));
+    }
+    bm.length = 0; wm.length = 0;
+    // 7번째 = 흑 차례, 가득 찬 열
+    send(black, { type: 'move', col: 0 });
+    const inv = await until(bm, (m) => m.type === 'invalid');
+    assert('사목 가득 찬 열 invalid', inv.reason === 'column-full' && inv.col === 0, inv);
+    assert('사목 가득 찬 열은 브로드캐스트 없음', !wm.some((m) => m.type === 'move'), wm.map((m) => m.type));
+    // 다른 열은 정상
+    send(black, { type: 'move', col: 1 });
+    const ok = await until(wm, isDrop(5, 1));
+    assert('사목 다른 열은 정상 착수', ok.color === 'black', ok.color);
+    black.close(); white.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 26. 사목 승리 브로드캐스트 (흑 가로 4목: 0,1,2,3열 바닥)
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await c4Room();
+    const SEQ = [0, 6, 1, 6, 2, 6, 3];   // 흑 0,1,2,3 / 백 6열에 쌓기
+    for (let i = 0; i < SEQ.length; i++) {
+      const mover = i % 2 === 0 ? black : white;
+      const expRow = SEQ[i] === 6 ? 5 - Math.floor(i / 2) : 5;
+      send(mover, { type: 'move', col: SEQ[i] });
+      await until(bm, isDrop(expRow, SEQ[i]));
+      await until(wm, isDrop(expRow, SEQ[i]));
+    }
+    const win = bm.find((m) => m.type === 'move' && m.win === true);
+    const winG = wm.find((m) => m.type === 'move' && m.win === true);
+    const key = (m) => m.winCells.map((x) => x.row + ',' + x.col).sort().join(' ');
+    assert('사목 승리 브로드캐스트(양쪽)', !!win && !!winG && win.color === 'black');
+    assert('사목 승리 칸 4개 전달', win && key(win) === '5,0 5,1 5,2 5,3', win && win.winCells);
+    assert('사목 승리 시 nextTurn null', win && win.nextTurn === null, win && win.nextTurn);
+    black.close(); white.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 27. 사목 무르기: 떨어진 돌이 사라지고 무른 사람 차례로 복귀
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await c4Room();
+    send(black, { type: 'move', col: 3 });
+    await until(bm, isDrop(5, 3));
+    send(black, { type: 'undoRequest' });
+    await until(wm, (m) => m.type === 'undoRequest');
+    send(white, { type: 'undoResponse', accept: true });
+    await until(bm, (m) => m.type === 'undo');
+    await until(wm, (m) => m.type === 'undo');
+    assert('사목 undo 양쪽 브로드캐스트', true);
+    // 무르기 후 흑이 같은 열에 다시 두면 또 바닥(row 5)
+    bm.length = 0; wm.length = 0;
+    send(black, { type: 'move', col: 3 });
+    const again = await until(wm, isDrop(5, 3));
+    assert('사목 undo 후 재착수 바닥 복귀', again.color === 'black' && again.row === 5, again.row);
+    black.close(); white.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 28. 게임 바꾸기: 오목 -> 사목 (3종목 중 지정한 종목으로 정확히 전환)
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await omokRoom();
+    send(black, { type: 'gameChangeRequest', game: 'connect4' });
+    const req = await until(wm, (m) => m.type === 'gameChangeRequest');
+    assert('게임 변경(오목->사목): 요청 game 필드', req.game === 'connect4', req.game);
+    send(white, { type: 'gameChangeResponse', accept: true });
+    const gb = await until(bm, (m) => m.type === 'gameChanged');
+    const gw = await until(wm, (m) => m.type === 'gameChanged');
+    assert('게임 변경(오목->사목): 양쪽 gameChanged',
+      gb.game === 'connect4' && gw.game === 'connect4' && gb.turn === 'black', { b: gb.game, w: gw.game });
+    // 색 유지 -> 원래 흑이 그대로 흑. 사목 낙하 동작
+    bm.length = 0; wm.length = 0;
+    send(black, { type: 'move', col: 2 });
+    const mv = await until(wm, isDrop(5, 2));
+    assert('게임 변경 후 사목 착수', mv.color === 'black' && mv.row === 5, mv);
+    black.close(); white.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 29. 게임 바꾸기: 사목 -> 오델로 (토글이 아니라 "요청한 종목"으로 간다)
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await c4Room();
+    send(black, { type: 'gameChangeRequest', game: 'othello' });
+    await until(wm, (m) => m.type === 'gameChangeRequest');
+    send(white, { type: 'gameChangeResponse', accept: true });
+    const gb = await until(bm, (m) => m.type === 'gameChanged');
+    assert('게임 변경(사목->오델로): 요청한 종목으로 전환', gb.game === 'othello', gb.game);
+    bm.length = 0;
+    send(black, { type: 'move', row: 2, col: 3 });
+    const mv = await until(bm, isMove(2, 3));
+    assert('사목->오델로 후 오델로 규칙 동작', mv.game === 'othello' && mv.counts.black === 4, mv.counts);
+    black.close(); white.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 30. 게임 바꾸기: 대기 중인 요청 없이 온 수락은 무시된다
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await c4Room();
+    send(white, { type: 'gameChangeResponse', accept: true });
+    await wait(120);
+    assert('게임 변경: 요청 없는 수락 무시',
+      !bm.some((m) => m.type === 'gameChanged') && !wm.some((m) => m.type === 'gameChanged'));
+    // 방은 여전히 사목
+    send(black, { type: 'move', col: 4 });
+    const mv = await until(wm, isDrop(5, 4));
+    assert('요청 없는 수락 후에도 사목 유지', mv.game === 'connect4', mv.game);
     black.close(); white.close();
     await wait(60);
   }

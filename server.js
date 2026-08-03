@@ -12,10 +12,19 @@ const express = require('express');
 const WebSocket = require('ws');
 const Rules = require('./public/rules.js');
 const Othello = require('./public/othello.js');
+const Connect4 = require('./public/connect4.js');
+
+// 지원 종목 (게임 생성/변경에서 공용으로 쓰는 화이트리스트)
+const GAMES = ['omok', 'othello', 'connect4'];
+function normGame(g) {
+  return GAMES.indexOf(g) !== -1 ? g : null;
+}
 
 // 방의 게임 종류에 맞는 규칙 모듈 반환
 function gameModule(game) {
-  return game === 'othello' ? Othello : Rules;
+  if (game === 'othello') return Othello;
+  if (game === 'connect4') return Connect4;
+  return Rules;
 }
 function colorToStr(c) {
   return c === Rules.BLACK ? 'black' : 'white';
@@ -83,7 +92,7 @@ wss.on('connection', (ws) => {
 
     switch (msg.type) {
       case 'create': {
-        const game = msg.game === 'othello' ? 'othello' : 'omok';
+        const game = normGame(msg.game) || 'omok';
         const rule = msg.rule === 'free' ? 'free' : 'renju';
         const M = gameModule(game);
         // 생성자 색 선호: 'black' | 'white' | 'random' (기본 black)
@@ -103,6 +112,7 @@ wss.on('connection', (ws) => {
           board: M.createBoard(),
           turn: M.BLACK,
           moves: [],
+          pendingGame: null,   // 합의 대기 중인 "바꿀 종목"
           players: [{ ws: ws, color: creatorColor }]
         };
         rooms.set(code, room);
@@ -159,6 +169,34 @@ wss.on('connection', (ws) => {
         if (me.color !== room.turn) return; // 내 차례 아님
         const r = msg.row | 0;
         const c = msg.col | 0;
+
+        // ── 사목(Connect Four) ────────────────────────────
+        // 메시지는 열(col)만 담는다. 착지 행은 서버가 계산해서
+        // 브로드캐스트에 담아 두 클라이언트가 동일하게 그리도록 한다.
+        if (room.game === 'connect4') {
+          const res = Connect4.applyMove(room.board, c, me.color);
+          if (!res) {
+            send(ws, { type: 'invalid', col: c, reason: 'column-full' });
+            return;
+          }
+          room.board = res.board;
+          room.moves.push({ row: res.row, col: c, color: me.color });
+          const winCells = Connect4.checkWinAt(room.board, res.row, c, me.color);
+          const draw = !winCells && Connect4.isFull(room.board);
+          const opp = me.color === Rules.BLACK ? Rules.WHITE : Rules.BLACK;
+          if (!winCells && !draw) room.turn = opp;
+          broadcast(room, {
+            type: 'move',
+            game: 'connect4',
+            row: res.row, col: c,
+            color: colorToStr(me.color),
+            win: !!winCells,
+            winCells: winCells || [],
+            draw: draw,
+            nextTurn: (winCells || draw) ? null : colorToStr(opp)
+          });
+          break;
+        }
 
         if (room.game === 'othello') {
           const res = Othello.applyMove(room.board, r, c, me.color);
@@ -313,21 +351,28 @@ wss.on('connection', (ws) => {
       case 'gameChangeRequest': {
         const room = rooms.get(ws.roomCode);
         if (!room) return;
-        const game = msg.game === 'othello' ? 'othello' : (msg.game === 'omok' ? 'omok' : null);
+        const game = normGame(msg.game);
         if (!game) return;              // 알 수 없는 종목
         if (game === room.game) return; // 현재와 같은 종목
         const opp = opponentOf(room, ws);
-        if (opp) send(opp.ws, { type: 'gameChangeRequest', game: game });
+        if (!opp) return;
+        // 종목이 3개 이상이므로 "토글"이 불가능하다. 수락 시 어떤 종목으로
+        // 바꿀지 방에 기억해 둔다(요청은 항상 최신 것 하나만 유효).
+        room.pendingGame = game;
+        send(opp.ws, { type: 'gameChangeRequest', game: game });
         break;
       }
 
       case 'gameChangeResponse': {
         const room = rooms.get(ws.roomCode);
         if (!room) return;
+        const target = room.pendingGame;
+        room.pendingGame = null;        // 응답 한 번으로 요청은 소멸
         if (msg.accept) {
-          if (room.moves.length > 0) return; // 착수 이후 변경 거부(무시)
-          // 두 종목뿐이므로 토글. 색은 유지(흑 선착), 보드/턴/기보만 새 종목 기준으로 리셋.
-          room.game = room.game === 'othello' ? 'omok' : 'othello';
+          if (!target || target === room.game) return; // 대기 중인 요청 없음
+          if (room.moves.length > 0) return;           // 착수 이후 변경 거부(무시)
+          // 색은 유지(흑 선착), 보드/턴/기보만 새 종목 기준으로 리셋.
+          room.game = target;
           resetRoomBoard(room);
           broadcast(room, { type: 'gameChanged', game: room.game, turn: 'black' });
         } else {

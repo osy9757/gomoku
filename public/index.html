@@ -66,6 +66,7 @@
             <div class="rule-options">
               <label class="rule-opt"><input type="radio" name="game" value="omok" checked /> 오목</label>
               <label class="rule-opt"><input type="radio" name="game" value="othello" /> 오델로</label>
+              <label class="rule-opt"><input type="radio" name="game" value="connect4" /> 사목</label>
             </div>
           </div>
 
@@ -104,7 +105,11 @@
               </div>
               <p class="room-status" id="roomStatusText">상대를 기다리는 중...</p>
               <button class="btn btn-gray btn-swap" id="btnSwap" type="button" style="display:none">돌 바꾸기</button>
-              <button class="btn btn-gray btn-swap" id="btnGameChange" type="button" style="display:none">오델로로 바꾸기</button>
+              <!-- 게임 바꾸기: 종목이 3개이므로 "다른 두 종목" 중에서 고른 뒤 요청한다 -->
+              <div class="game-change-row" id="gameChangeRow" style="display:none">
+                <select id="gameChangeSelect" aria-label="바꿀 게임"></select>
+                <button class="btn btn-gray btn-mini" id="btnGameChange" type="button">변경 요청</button>
+              </div>
             </div>
           </div>
         </div>
@@ -115,7 +120,7 @@
           <div class="player-card" id="playerBlack">
             <span class="stone-icon black"></span>
             <div class="player-meta">
-              <span class="player-name">흑돌 <span class="player-tag" id="tagBlack"></span></span>
+              <span class="player-name"><span id="nameBlack">흑돌</span> <span class="player-tag" id="tagBlack"></span></span>
               <span class="player-status" id="statusBlack">대기 중</span>
             </div>
             <span class="player-timer" id="timerBlack">00:00</span>
@@ -123,7 +128,7 @@
           <div class="player-card" id="playerWhite">
             <span class="stone-icon white"></span>
             <div class="player-meta">
-              <span class="player-name">백돌 <span class="player-tag" id="tagWhite"></span></span>
+              <span class="player-name"><span id="nameWhite">백돌</span> <span class="player-tag" id="tagWhite"></span></span>
               <span class="player-status" id="statusWhite">대기 중</span>
             </div>
             <span class="player-timer" id="timerWhite">00:00</span>
@@ -237,6 +242,7 @@
 
   <script src="rules.js"></script>
   <script src="othello.js"></script>
+  <script src="connect4.js"></script>
   <script src="game.js"></script>
 </body>
 </html>

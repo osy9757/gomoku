@@ -7,23 +7,52 @@
 
   var R = window.Rules;
   var O = window.Othello;
-  var BLACK = R.BLACK, WHITE = R.WHITE, EMPTY = R.EMPTY; // 오목/오델로 공통 (1,2,0)
-  var SIZE = R.BOARD_SIZE;          // 현재 게임 보드 크기 (오목 15 / 오델로 8)
+  var C = window.Connect4;
+  var BLACK = R.BLACK, WHITE = R.WHITE, EMPTY = R.EMPTY; // 세 게임 공통 (1,2,0)
+  // 보드는 더 이상 정사각이 아니다 (사목 6행 x 7열).
+  // 행/열을 따로 들고 다닌다. 오목/오델로는 ROWS === COLS.
+  var ROWS = R.BOARD_SIZE, COLS = R.BOARD_SIZE;
   var STAR_POINTS = [[3, 3], [3, 11], [7, 7], [11, 3], [11, 11]];
   // 오델로 보드 표식 위치(격자 교차점 기준)
   var OTHELLO_DOTS = [[2, 2], [2, 6], [6, 2], [6, 6]];
 
+  // 지원 종목 (순서 = 선택 UI 표시 순서)
+  var GAMES = ['omok', 'othello', 'connect4'];
+  var GAME_LABEL = { omok: '오목', othello: '오델로', connect4: '사목' };
+
   // 현재 게임의 규칙 모듈
-  function curMod() { return state.game === 'othello' ? O : R; }
+  function curMod() {
+    if (state.game === 'othello') return O;
+    if (state.game === 'connect4') return C;
+    return R;
+  }
   function newBoard() { return curMod().createBoard(); }
-  function boardSize() { return state.game === 'othello' ? O.BOARD_SIZE : R.BOARD_SIZE; }
+  function boardRows(g) {
+    g = g || state.game;
+    if (g === 'othello') return O.BOARD_SIZE;
+    if (g === 'connect4') return C.ROWS;
+    return R.BOARD_SIZE;
+  }
+  function boardCols(g) {
+    g = g || state.game;
+    if (g === 'othello') return O.BOARD_SIZE;
+    if (g === 'connect4') return C.COLS;
+    return R.BOARD_SIZE;
+  }
   function otherColor(c) { return c === BLACK ? WHITE : BLACK; }
-  // 게임 종류 관련 라벨/토글 (게임 바꾸기 UI 공용)
-  function normGame(g) { return g === 'othello' ? 'othello' : 'omok'; }
-  function otherGame(g) { return normGame(g) === 'othello' ? 'omok' : 'othello'; }
-  function gameName(g) { return normGame(g) === 'othello' ? '오델로' : '오목'; }
-  // 조사 처리: 오델로'로' / 오목'으로'
-  function gameNameWithRo(g) { return normGame(g) === 'othello' ? '오델로로' : '오목으로'; }
+  // 게임 종류 관련 라벨 (게임 바꾸기 UI 공용)
+  function normGame(g) { return GAMES.indexOf(g) !== -1 ? g : 'omok'; }
+  // 종목이 3개이므로 "반대 종목"은 하나가 아니라 목록이다.
+  function otherGames(g) {
+    var cur = normGame(g);
+    return GAMES.filter(function (x) { return x !== cur; });
+  }
+  function gameName(g) { return GAME_LABEL[normGame(g)]; }
+  // 돌 이름: 사목만 빨강/노랑으로 표시한다 (프로토콜 색은 그대로 black/white)
+  function colorName(c) {
+    if (state.game === 'connect4') return c === BLACK ? '빨강' : '노랑';
+    return c === BLACK ? '흑돌' : '백돌';
+  }
 
   // ── DOM ────────────────────────────────────────────────
   var $ = function (id) { return document.getElementById(id); };
@@ -40,7 +69,7 @@
   // ── 상태 ────────────────────────────────────────────────
   var state = {
     mode: 'local',        // 'local' | 'online'
-    game: 'omok',         // 'omok' | 'othello'
+    game: 'omok',         // 'omok' | 'othello' | 'connect4'
     rule: 'renju',        // 'renju' | 'free'
     theme: 'default',     // 'default' | 'excel'
     board: R.createBoard(),
@@ -63,8 +92,10 @@
     intentionalClose: false
   };
 
-  // 엑셀 테마 단위(%) — 헤더 1 + 셀 SIZE
-  function excelUnit() { return 100 / (SIZE + 1); }
+  // 엑셀 테마 단위(%) — 헤더 1칸 + 셀 COLS/ROWS.
+  // 보드가 정사각이 아닐 수 있으므로 가로/세로 단위를 따로 계산한다.
+  function excelUnitX() { return 100 / (COLS + 1); }
+  function excelUnitY() { return 100 / (ROWS + 1); }
 
   // ============================================================
   // 유틸
@@ -81,7 +112,11 @@
       // 오델로 표준 표기: a-h(소문자) + 1-8 (위에서 아래로)
       return String.fromCharCode(97 + col) + (row + 1);
     }
-    return String.fromCharCode(65 + col) + (SIZE - row);
+    if (state.game === 'connect4') {
+      // 사목: 열 A-G + 행 1-6 (엑셀처럼 위에서 아래로). 맨 아랫줄이 6.
+      return String.fromCharCode(65 + col) + (row + 1);
+    }
+    return String.fromCharCode(65 + col) + (ROWS - row);
   }
   // 엑셀 테마 전용: 화면에 보이는 행 헤더(1..N, 위에서 아래로)를 그대로 반영
   function excelCoordLabel(row, col) {
@@ -110,25 +145,49 @@
   function innerSize() {
     return boardInner.getBoundingClientRect().width || 0;
   }
+  // 사목처럼 보드가 정사각이 아닌 경우를 위해 높이도 따로 잰다.
+  function innerHeight() {
+    return boardInner.getBoundingClientRect().height || 0;
+  }
 
   function drawLines() {
     var size = innerSize();
-    if (!size) return;
+    var vsize = innerHeight();
+    if (!size || !vsize) return;
     var dpr = window.devicePixelRatio || 1;
     canvas.width = size * dpr;
-    canvas.height = size * dpr;
+    canvas.height = vsize * dpr;
     canvas.style.width = size + 'px';
-    canvas.style.height = size + 'px';
+    canvas.style.height = vsize + 'px';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, size, size);
+    ctx.clearRect(0, 0, size, vsize);
+
+    if (state.game === 'connect4') {
+      // 파란 판에 뚫린 "구멍"을 밝은 원으로 그린다. 돌은 그 위에 얹힌다.
+      var cw = size / COLS, chh = vsize / ROWS;
+      var hr = Math.min(cw, chh) * 0.40;
+      for (var cr = 0; cr < ROWS; cr++) {
+        for (var ccc = 0; ccc < COLS; ccc++) {
+          var cx = (ccc + 0.5) * cw, cy = (cr + 0.5) * chh;
+          ctx.beginPath();
+          ctx.arc(cx, cy, hr, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(232, 240, 252, 0.95)';
+          ctx.fill();
+          ctx.lineWidth = Math.max(1, hr * 0.12);
+          ctx.strokeStyle = 'rgba(12, 42, 92, 0.35)';
+          ctx.stroke();
+        }
+      }
+      return;
+    }
 
     if (state.game === 'othello') {
       // 8x8 셀 격자 (칸 기준). 진한 녹색 라인.
-      var ocell = size / SIZE;
+      var ocell = size / COLS;
       ctx.strokeStyle = 'rgba(12,60,30,0.85)';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      for (var oi = 0; oi <= SIZE; oi++) {
+      for (var oi = 0; oi <= COLS; oi++) {
         var op = Math.round(oi * ocell) + 0.5;
         ctx.moveTo(op, 0.5); ctx.lineTo(op, size - 0.5);
         ctx.moveTo(0.5, op); ctx.lineTo(size - 0.5, op);
@@ -144,11 +203,11 @@
       return;
     }
 
-    var cell = size / (SIZE - 1);
+    var cell = size / (COLS - 1);
     ctx.strokeStyle = 'rgba(60,40,20,0.75)';
     ctx.lineWidth = 1;
     ctx.beginPath();
-    for (var i = 0; i < SIZE; i++) {
+    for (var i = 0; i < COLS; i++) {
       var p = Math.round(i * cell) + 0.5;
       ctx.moveTo(p, 0.5); ctx.lineTo(p, size - 0.5);
       ctx.moveTo(0.5, p); ctx.lineTo(size - 0.5, p);
@@ -166,65 +225,73 @@
   function buildExcelGrid() {
     excelHeaders.innerHTML = '';
     boardCells.innerHTML = '';
-    var U = excelUnit();
+    // 가로/세로 단위를 분리 (사목은 8열 x 7행이라 정사각이 아니다)
+    var UX = excelUnitX(), UY = excelUnitY();
     // 모서리
     var corner = document.createElement('div');
     corner.className = 'col-head';
     corner.style.left = '0'; corner.style.top = '0';
-    corner.style.width = U + '%'; corner.style.height = U + '%';
+    corner.style.width = UX + '%'; corner.style.height = UY + '%';
     excelHeaders.appendChild(corner);
-    // 열 헤더 A..(A+SIZE-1)
-    for (var c = 0; c < SIZE; c++) {
+    // 열 헤더 A..(A+COLS-1)
+    for (var c = 0; c < COLS; c++) {
       var ch = document.createElement('div');
       ch.className = 'col-head';
-      ch.style.left = (U * (c + 1)) + '%';
+      ch.style.left = (UX * (c + 1)) + '%';
       ch.style.top = '0';
-      ch.style.width = U + '%'; ch.style.height = U + '%';
+      ch.style.width = UX + '%'; ch.style.height = UY + '%';
       ch.textContent = String.fromCharCode(65 + c);
       excelHeaders.appendChild(ch);
     }
-    // 행 헤더 1..SIZE
-    for (var r = 0; r < SIZE; r++) {
+    // 행 헤더 1..ROWS
+    for (var r = 0; r < ROWS; r++) {
       var rh = document.createElement('div');
       rh.className = 'row-head';
       rh.style.left = '0';
-      rh.style.top = (U * (r + 1)) + '%';
-      rh.style.width = U + '%'; rh.style.height = U + '%';
+      rh.style.top = (UY * (r + 1)) + '%';
+      rh.style.width = UX + '%'; rh.style.height = UY + '%';
       rh.textContent = (r + 1);
       excelHeaders.appendChild(rh);
     }
     // 셀
     var last = lastRealMove();
-    for (var rr = 0; rr < SIZE; rr++) {
-      for (var cc = 0; cc < SIZE; cc++) {
+    for (var rr = 0; rr < ROWS; rr++) {
+      for (var cc = 0; cc < COLS; cc++) {
         var cellDiv = document.createElement('div');
         cellDiv.className = 'grid-cell';
         if (last && last.row === rr && last.col === cc) cellDiv.className += ' last-move';
-        cellDiv.style.left = (U * (cc + 1)) + '%';
-        cellDiv.style.top = (U * (rr + 1)) + '%';
-        cellDiv.style.width = U + '%';
-        cellDiv.style.height = U + '%';
+        cellDiv.style.left = (UX * (cc + 1)) + '%';
+        cellDiv.style.top = (UY * (rr + 1)) + '%';
+        cellDiv.style.width = UX + '%';
+        cellDiv.style.height = UY + '%';
         boardCells.appendChild(cellDiv);
       }
     }
   }
 
   // (row,col) -> 픽셀 중심 {x,y,d(지름)}
+  // 보드가 정사각이 아닐 수 있으므로 가로/세로 셀 크기를 따로 구하고,
+  // 돌 지름은 둘 중 작은 쪽을 기준으로 잡아 항상 칸 안에 들어가게 한다.
   function stoneGeom(row, col) {
-    var size = innerSize();
+    var size = innerSize(), vsize = innerHeight();
     if (state.theme === 'excel') {
-      var u = size / (SIZE + 1);
+      var ux = size / (COLS + 1), uy = vsize / (ROWS + 1);
+      var ratio = state.game === 'omok' ? 0.68 : 0.8;
       return {
-        x: u * (col + 1.5),
-        y: u * (row + 1.5),
-        d: u * (state.game === 'othello' ? 0.8 : 0.68)
+        x: ux * (col + 1.5),
+        y: uy * (row + 1.5),
+        d: Math.min(ux, uy) * ratio
       };
     }
+    if (state.game === 'connect4') {
+      var cw = size / COLS, chh = vsize / ROWS;
+      return { x: (col + 0.5) * cw, y: (row + 0.5) * chh, d: Math.min(cw, chh) * 0.8 };
+    }
     if (state.game === 'othello') {
-      var ocell = size / SIZE;
+      var ocell = size / COLS;
       return { x: (col + 0.5) * ocell, y: (row + 0.5) * ocell, d: ocell * 0.8 };
     }
-    var cell = size / (SIZE - 1);
+    var cell = size / (COLS - 1);
     return { x: col * cell, y: row * cell, d: cell * 0.9 };
   }
 
@@ -235,8 +302,10 @@
   // (row,col) 키로 기존 요소를 찾아 위치·클래스만 갱신하고,
   // 정말로 새로 생긴 돌에만 진입 애니메이션을 준다.
   var pieceEls = Object.create(null);    // 'r,c' -> Element
-  var pieceKind = '';                    // 'stone' | 'disc' | ''
-  var overlayEls = Object.create(null);  // 'last-dot' | 'othello-last' -> Element
+  var pieceKind = '';                    // 'stone' | 'disc' | 'c4' | ''
+  var overlayEls = Object.create(null);  // 'last-dot' | 'othello-last' | 'c4-last' -> Element
+  // 진입 애니메이션 이름 (종류별). playEnter 가 종료 감지에 사용한다.
+  var ENTER_ANIMS = ['stone-in', 'disc-in', 'c4-drop'];
 
   function clearPieces() {
     stonesLayer.innerHTML = '';
@@ -265,7 +334,7 @@
   function playEnter(el) {
     el.classList.add('enter');
     var done = function (e) {
-      if (e && e.animationName !== 'stone-in' && e.animationName !== 'disc-in') return;
+      if (e && ENTER_ANIMS.indexOf(e.animationName) === -1) return;
       el.classList.remove('enter');
       el.removeEventListener('animationend', done);
     };
@@ -279,7 +348,7 @@
         var running = true;
         if (typeof el.getAnimations === 'function') {
           running = el.getAnimations().some(function (a) {
-            return a.animationName === 'stone-in' || a.animationName === 'disc-in';
+            return ENTER_ANIMS.indexOf(a.animationName) !== -1;
           });
         }
         if (!running) done();
@@ -341,8 +410,8 @@
     var winSet = {};
     state.winStones.forEach(function (w) { winSet[w.row + ',' + w.col] = true; });
     var live = Object.create(null);
-    for (var r = 0; r < SIZE; r++) {
-      for (var c = 0; c < SIZE; c++) {
+    for (var r = 0; r < ROWS; r++) {
+      for (var c = 0; c < COLS; c++) {
         var v = state.board[r][c];
         if (v === EMPTY) continue;
         var key = r + ',' + c;
@@ -399,7 +468,7 @@
       m.textContent = '✕';
       m.style.left = g.x + 'px';
       m.style.top = g.y + 'px';
-      m.style.fontSize = Math.max(10, size / (SIZE - 1) * 0.5) + 'px';
+      m.style.fontSize = Math.max(10, size / (COLS - 1) * 0.5) + 'px';
       markersLayer.appendChild(m);
     });
   }
@@ -410,8 +479,8 @@
     var flipSet = {};
     (state.lastFlipped || []).forEach(function (f) { flipSet[f[0] + ',' + f[1]] = true; });
     var live = Object.create(null);
-    for (var r = 0; r < SIZE; r++) {
-      for (var c = 0; c < SIZE; c++) {
+    for (var r = 0; r < ROWS; r++) {
+      for (var c = 0; c < COLS; c++) {
         var v = state.board[r][c];
         if (v === EMPTY) continue;
         var key = r + ',' + c;
@@ -470,6 +539,75 @@
     });
   }
 
+  // ── 사목 렌더링 ───────────────────────────────────────
+  // 오델로와 동일한 keyed diff 를 쓴다. 새로 떨어진 돌만 낙하 애니메이션이
+  // 재생되고, 이미 놓인 돌은 요소가 그대로 재사용되어 깜빡이지 않는다.
+  function renderConnect4() {
+    usePieceKind('c4');
+    var winSet = {};
+    state.winStones.forEach(function (w) { winSet[w.row + ',' + w.col] = true; });
+    var live = Object.create(null);
+    for (var r = 0; r < ROWS; r++) {
+      for (var c = 0; c < COLS; c++) {
+        var v = state.board[r][c];
+        if (v === EMPTY) continue;
+        var key = r + ',' + c;
+        var g = stoneGeom(r, c);
+        var won = !!winSet[key];
+        var el = pieceEls[key];
+        if (!el) {
+          el = document.createElement('div');
+          el.setAttribute('data-key', key);
+          el.setAttribute('data-color', String(v));
+          el.className = 'c4-disc ' + colorStr(v) + (won ? ' win' : '');
+          setPieceGeom(el, g);
+          // 낙하 시작 위치: 그 열의 판 위쪽 바깥
+          el.style.setProperty('--drop-from', (-(g.y + g.d)) + 'px');
+          pieceEls[key] = el;
+          stonesLayer.appendChild(el);
+          playEnter(el);
+        } else {
+          if (el.getAttribute('data-color') !== String(v)) {
+            el.setAttribute('data-color', String(v));
+            el.classList.toggle('black', v === BLACK);
+            el.classList.toggle('white', v === WHITE);
+          }
+          el.classList.toggle('win', won);
+          setPieceGeom(el, g);
+          el.style.setProperty('--drop-from', (-(g.y + g.d)) + 'px');
+        }
+        live[key] = true;
+      }
+    }
+    dropStalePieces(live);
+    var last = state.theme !== 'excel' ? lastRealMove() : null;
+    updateOverlay('c4-last', !!last, last ? stoneGeom(last.row, last.col) : null, true);
+  }
+
+  function shouldShowConnect4Hints() {
+    if (state.gameOver) return false;
+    if (state.online) {
+      return state.started && state.turn === colorNum(state.myColor);
+    }
+    return true;
+  }
+
+  // 각 열이 "떨어질 자리"를 옅게 표시한다 (오델로 합법수 힌트와 같은 요소).
+  function renderConnect4Hints() {
+    markersLayer.innerHTML = '';
+    if (!shouldShowConnect4Hints()) return;
+    C.legalColumns(state.board).forEach(function (m) {
+      var g = stoneGeom(m.row, m.col);
+      var dot = document.createElement('div');
+      dot.className = 'move-hint';
+      dot.style.left = g.x + 'px';
+      dot.style.top = g.y + 'px';
+      dot.style.width = (g.d * 0.42) + 'px';
+      dot.style.height = (g.d * 0.42) + 'px';
+      markersLayer.appendChild(dot);
+    });
+  }
+
   function renderBoard() {
     if (state.theme === 'excel') {
       buildExcelGrid();
@@ -479,6 +617,9 @@
     if (state.game === 'othello') {
       renderDiscs();
       renderOthelloHints();
+    } else if (state.game === 'connect4') {
+      renderConnect4();
+      renderConnect4Hints();
     } else {
       renderStones();
       renderMarkers();
@@ -508,13 +649,17 @@
 
     // 현재 차례
     $('turnStone').className = 'stone-icon small ' + colorStr(state.turn);
-    $('turnText').textContent = state.turn === BLACK ? '흑돌' : '백돌';
+    $('turnText').textContent = colorName(state.turn);
+
+    // 플레이어 카드 이름 (사목은 빨강/노랑)
+    $('nameBlack').textContent = colorName(BLACK);
+    $('nameWhite').textContent = colorName(WHITE);
 
     // 게임 상태
     var gs = '진행 중';
     if (state.winner === 0) gs = '무승부';
-    else if (state.winner === BLACK) gs = '흑돌 승리';
-    else if (state.winner === WHITE) gs = '백돌 승리';
+    else if (state.winner === BLACK) gs = colorName(BLACK) + ' 승리';
+    else if (state.winner === WHITE) gs = colorName(WHITE) + ' 승리';
     $('gameStateText').textContent = gs;
 
     // 오델로 점수 표시
@@ -549,17 +694,39 @@
     updateExcelStatusBar();
   }
 
-  // 방 안에서만 쓰는 합의형 버튼(돌 바꾸기 / 게임 바꾸기)의 표시 조건은 동일하다.
-  // 게임 바꾸기 버튼은 "바뀔 종목"을 라벨로 보여 준다.
+  // 방 안에서만 쓰는 합의형 컨트롤(돌 바꾸기 / 게임 바꾸기)의 표시 조건은 동일하다.
+  // 종목이 3개라 "다음 종목"이 하나로 정해지지 않으므로, 나머지 두 종목을
+  // 셀렉트로 고른 뒤 "변경 요청" 버튼을 누르는 형태로 만든다.
   function updateSwapButton() {
     var canSwap = state.online && state.started && !state.gameOver && state.moves.length === 0;
     var btn = $('btnSwap');
     if (btn) btn.style.display = canSwap ? '' : 'none';
-    var gbtn = $('btnGameChange');
-    if (gbtn) {
-      gbtn.style.display = canSwap ? '' : 'none';
-      gbtn.textContent = gameNameWithRo(otherGame(state.game)) + ' 바꾸기';
+    var row = $('gameChangeRow');
+    if (row) row.style.display = canSwap ? '' : 'none';
+    syncGameChangeOptions();
+  }
+
+  // 셀렉트 옵션을 "현재 종목을 뺀 나머지"로 맞춘다 (선택값은 가능한 한 유지).
+  function syncGameChangeOptions() {
+    var sel = $('gameChangeSelect');
+    if (!sel) return;
+    var others = otherGames(state.game);
+    var same = sel.options.length === others.length;
+    if (same) {
+      for (var i = 0; i < others.length; i++) {
+        if (sel.options[i].value !== others[i]) { same = false; break; }
+      }
     }
+    if (same) return;
+    var prev = sel.value;
+    sel.innerHTML = '';
+    others.forEach(function (g) {
+      var opt = document.createElement('option');
+      opt.value = g;
+      opt.textContent = gameName(g);
+      sel.appendChild(opt);
+    });
+    if (others.indexOf(prev) !== -1) sel.value = prev;
   }
 
   function setColorSelectDisabled(disabled) {
@@ -588,13 +755,13 @@
     var txt;
     if (state.gameOver) {
       if (state.winner === 0) txt = '무승부';
-      else if (state.winner === BLACK) txt = '흑돌 승리';
-      else if (state.winner === WHITE) txt = '백돌 승리';
+      else if (state.winner === BLACK) txt = colorName(BLACK) + ' 승리';
+      else if (state.winner === WHITE) txt = colorName(WHITE) + ' 승리';
       else txt = '준비';
     } else if (state.online && !state.started) {
       txt = '준비';
     } else {
-      txt = (state.turn === BLACK ? '흑돌' : '백돌') + ' 차례';
+      txt = colorName(state.turn) + ' 차례';
     }
     left.textContent = txt;
 
@@ -616,8 +783,8 @@
     if (last) {
       var lbl = excelCoordLabel(last.row, last.col);
       nb.textContent = lbl;
-      var fn = state.game === 'othello' ? 'OTHELLO' : 'OMOK';
-      fx.textContent = '=' + fn + '("' + (last.color === BLACK ? '흑돌' : '백돌') + '","' + lbl + '")';
+      var fn = state.game === 'othello' ? 'OTHELLO' : (state.game === 'connect4' ? 'CONNECT4' : 'OMOK');
+      fx.textContent = '=' + fn + '("' + colorName(last.color) + '","' + lbl + '")';
     } else {
       nb.textContent = 'A1';
       fx.textContent = '';
@@ -648,12 +815,12 @@
 
       if (state.game === 'othello' && mv.kind === 'pass') {
         num.textContent = '··';
-        name.textContent = mv.color === BLACK ? '흑돌' : '백돌';
+        name.textContent = colorName(mv.color);
         coord.textContent = '패스';
       } else {
         seq++;
         num.textContent = (seq < 10 ? '0' : '') + seq + '.';
-        name.textContent = mv.color === BLACK ? '흑돌' : '백돌';
+        name.textContent = colorName(mv.color);
         var label = coordLabel(mv.row, mv.col);
         if (state.game === 'othello' && mv.flipped) {
           label += ' (+' + mv.flipped.length + ')';
@@ -689,9 +856,9 @@
       var dr = R.DIRECTIONS[d][0], dc = R.DIRECTIONS[d][1];
       var cells = [{ row: r, col: c }];
       var i = r + dr, j = c + dc;
-      while (i >= 0 && i < SIZE && j >= 0 && j < SIZE && board[i][j] === color) { cells.push({ row: i, col: j }); i += dr; j += dc; }
+      while (i >= 0 && i < ROWS && j >= 0 && j < COLS && board[i][j] === color) { cells.push({ row: i, col: j }); i += dr; j += dc; }
       i = r - dr; j = c - dc;
-      while (i >= 0 && i < SIZE && j >= 0 && j < SIZE && board[i][j] === color) { cells.push({ row: i, col: j }); i -= dr; j -= dc; }
+      while (i >= 0 && i < ROWS && j >= 0 && j < COLS && board[i][j] === color) { cells.push({ row: i, col: j }); i -= dr; j -= dc; }
       var need = (rule === 'renju' && color === BLACK) ? (cells.length === 5) : (cells.length >= 5);
       if (need) return cells;
     }
@@ -703,10 +870,12 @@
     state.moves.push({ row: row, col: col, color: color });
   }
 
-  function finishWin(row, col, color) {
+  function finishWin(row, col, color, winCells) {
     state.gameOver = true;
     state.winner = color;
-    state.winStones = getWinningStones(state.board, row, col, color, state.rule);
+    state.winStones = winCells || (state.game === 'connect4'
+      ? (C.checkWinAt(state.board, row, col, color) || [])
+      : getWinningStones(state.board, row, col, color, state.rule));
     renderBoard();
     updateSidebar();
     showResultModal(color);
@@ -715,6 +884,7 @@
   function finishDraw() {
     state.gameOver = true;
     state.winner = 0;
+    renderBoard();      // 마지막 착수까지 그린 뒤 종료 표시 (사목 42수 만원)
     updateSidebar();
     showResultModal(0);
   }
@@ -839,7 +1009,7 @@
     applyMove(row, col, color);
     var win = R.checkWinAt(state.board, row, col, color, state.rule);
     if (win) { finishWin(row, col, color); renderMoveList(); return; }
-    if (state.moves.length === SIZE * SIZE) { finishDraw(); renderMoveList(); return; }
+    if (state.moves.length === ROWS * COLS) { finishDraw(); renderMoveList(); return; }
     state.turn = color === BLACK ? WHITE : BLACK;
     renderBoard();
     updateSidebar();
@@ -851,8 +1021,49 @@
     var color = colorNum(cstr);
     applyMove(row, col, color);
     if (win) { finishWin(row, col, color); renderMoveList(); return; }
-    if (state.moves.length === SIZE * SIZE) { finishDraw(); renderMoveList(); return; }
+    if (state.moves.length === ROWS * COLS) { finishDraw(); renderMoveList(); return; }
     state.turn = color === BLACK ? WHITE : BLACK;
+    renderBoard();
+    updateSidebar();
+    renderMoveList();
+  }
+
+  // ── 사목 로직 ─────────────────────────────────────────
+  // 착수 단위는 "열". 착지 행은 중력으로 결정된다.
+  function tryLocalPlaceConnect4(col) {
+    if (state.gameOver) return;
+    var color = state.turn;
+    var res = C.applyMove(state.board, col, color);
+    if (!res) { toast('그 열은 가득 찼습니다'); return; }
+    state.board = res.board;
+    state.moves.push({ row: res.row, col: col, color: color });
+    finishConnect4Ply(res.row, col, color);
+  }
+
+  // 온라인: 서버가 계산한 착지 행을 그대로 반영 (양쪽 화면이 항상 같다)
+  function applyRemoteMoveConnect4(msg) {
+    var color = colorNum(msg.color);
+    var row = msg.row | 0, col = msg.col | 0;
+    state.board[row][col] = color;
+    state.moves.push({ row: row, col: col, color: color });
+    if (msg.win) {
+      finishWin(row, col, color, (msg.winCells && msg.winCells.length) ? msg.winCells : null);
+      renderMoveList();
+      return;
+    }
+    if (msg.draw) { finishDraw(); renderMoveList(); return; }
+    state.turn = msg.nextTurn ? colorNum(msg.nextTurn) : otherColor(color);
+    renderBoard();
+    updateSidebar();
+    renderMoveList();
+  }
+
+  // 착수 후 승/무/턴 처리 (로컬 전용)
+  function finishConnect4Ply(row, col, color) {
+    var cells = C.checkWinAt(state.board, row, col, color);
+    if (cells) { finishWin(row, col, color, cells); renderMoveList(); return; }
+    if (C.isFull(state.board)) { finishDraw(); renderMoveList(); return; }
+    state.turn = otherColor(color);
     renderBoard();
     updateSidebar();
     renderMoveList();
@@ -865,26 +1076,33 @@
     var rect = clickOverlay.getBoundingClientRect();
     var x = e.clientX - rect.left;
     var y = e.clientY - rect.top;
-    var size = rect.width;
+    var size = rect.width, vsize = rect.height;
     if (state.theme === 'excel') {
-      var u = size / (SIZE + 1);
-      if (x < u || y < u) return null; // 헤더 영역
-      var col = Math.floor((x - u) / u);
-      var row = Math.floor((y - u) / u);
-      if (row < 0 || row >= SIZE || col < 0 || col >= SIZE) return null;
+      var ux = size / (COLS + 1), uy = vsize / (ROWS + 1);
+      if (x < ux || y < uy) return null; // 헤더 영역
+      var col = Math.floor((x - ux) / ux);
+      var row = Math.floor((y - uy) / uy);
+      if (row < 0 || row >= ROWS || col < 0 || col >= COLS) return null;
       return { row: row, col: col };
     }
+    if (state.game === 'connect4') {
+      var ccw = size / COLS, cch = vsize / ROWS;
+      var c4c = Math.floor(x / ccw);
+      var c4r = Math.floor(y / cch);
+      if (c4r < 0 || c4r >= ROWS || c4c < 0 || c4c >= COLS) return null;
+      return { row: c4r, col: c4c };
+    }
     if (state.game === 'othello') {
-      var ocell = size / SIZE;
+      var ocell = size / COLS;
       var oc = Math.floor(x / ocell);
       var orow = Math.floor(y / ocell);
-      if (orow < 0 || orow >= SIZE || oc < 0 || oc >= SIZE) return null;
+      if (orow < 0 || orow >= ROWS || oc < 0 || oc >= COLS) return null;
       return { row: orow, col: oc };
     }
-    var cell = size / (SIZE - 1);
+    var cell = size / (COLS - 1);
     var col2 = Math.round(x / cell);
     var row2 = Math.round(y / cell);
-    if (row2 < 0 || row2 >= SIZE || col2 < 0 || col2 >= SIZE) return null;
+    if (row2 < 0 || row2 >= ROWS || col2 < 0 || col2 >= COLS) return null;
     return { row: row2, col: col2 };
   }
 
@@ -894,6 +1112,12 @@
     if (state.online) {
       if (!state.started || state.gameOver) return;
       if (state.turn !== colorNum(state.myColor)) { toast('상대 차례입니다'); return; }
+      if (state.game === 'connect4') {
+        // 열만 보내고 착지 행은 서버가 정한다
+        if (C.dropRow(state.board, cell.col) < 0) { toast('그 열은 가득 찼습니다'); return; }
+        wsSend({ type: 'move', col: cell.col });
+        return;
+      }
       if (state.game === 'othello') {
         if (O.flipsFor(state.board, cell.row, cell.col, state.turn).length === 0) {
           toast('둘 수 없는 자리입니다');
@@ -911,6 +1135,8 @@
     } else {
       if (state.game === 'othello') {
         tryLocalPlaceOthello(cell.row, cell.col);
+      } else if (state.game === 'connect4') {
+        tryLocalPlaceConnect4(cell.col);   // 열 안 아무 곳이나 클릭하면 그 열로 떨어진다
       } else {
         tryLocalPlace(cell.row, cell.col);
       }
@@ -932,10 +1158,12 @@
       title.textContent = '무승부!' + scoreStr;
       msg.textContent = state.game === 'othello'
         ? '돌 개수가 같습니다. 막상막하의 승부였네요.'
-        : '바둑판이 가득 찼습니다. 우열을 가리지 못했네요.';
+        : (state.game === 'connect4'
+          ? '판이 가득 찼습니다. 우열을 가리지 못했네요.'
+          : '바둑판이 가득 찼습니다. 우열을 가리지 못했네요.');
     } else {
       stone.className = 'modal-stone ' + colorStr(winner);
-      title.textContent = (winner === BLACK ? '흑돌' : '백돌') + ' 승리!' + scoreStr;
+      title.textContent = colorName(winner) + ' 승리!' + scoreStr;
       if (state.online) {
         var iWon = state.myColor === colorStr(winner);
         msg.textContent = iWon ? '축하합니다! 승리하셨습니다.' : '아쉽네요. 다음 판을 노려보세요.';
@@ -1086,15 +1314,18 @@
 
   // 게임 종류에 따른 레이아웃/보드 크기/타이틀 반영 (리셋은 별도)
   function applyGameLayout() {
-    SIZE = boardSize();
+    ROWS = boardRows();
+    COLS = boardCols();
     document.body.classList.toggle('game-othello', state.game === 'othello');
+    document.body.classList.toggle('game-connect4', state.game === 'connect4');
     var ruleRow = $('ruleRow');
-    if (ruleRow) ruleRow.hidden = (state.game === 'othello');
+    // 규칙(렌주룰) 선택은 오목에만 해당된다
+    if (ruleRow) ruleRow.hidden = (state.game !== 'omok');
     var title = document.querySelector('.site-title');
     var sub = document.querySelector('.site-subtitle');
-    if (title) title.textContent = state.game === 'othello' ? '오델로' : '오목';
+    if (title) title.textContent = gameName(state.game);
     if (sub) sub.textContent = '온라인 2인용 대국';
-    document.title = (state.game === 'othello' ? '오델로' : '오목') + ' · 온라인 2인용 대국';
+    document.title = gameName(state.game) + ' · 온라인 2인용 대국';
     applyGameUI();
     refreshRibbonMenu();   // 엑셀 테마: 규칙 행(수식 탭) 표시 여부가 바뀜
   }
@@ -1247,8 +1478,10 @@
         break;
 
       case 'move':
-        if (msg.game === 'othello' || state.game === 'othello') {
+        if (msg.game === 'othello' || (!msg.game && state.game === 'othello')) {
           applyRemoteMoveOthello(msg);
+        } else if (msg.game === 'connect4' || (!msg.game && state.game === 'connect4')) {
+          applyRemoteMoveConnect4(msg);
         } else {
           applyRemoteMove(msg.row, msg.col, msg.color, msg.win);
         }
@@ -1257,6 +1490,7 @@
       case 'invalid':
         if (msg.reason === 'forbidden' && msg.ftype) toast(R.FORBIDDEN_LABEL[msg.ftype] || '금수입니다');
         else if (msg.reason === 'illegal') toast('둘 수 없는 자리입니다');
+        else if (msg.reason === 'column-full') toast('그 열은 가득 찼습니다');
         break;
 
       case 'chat':
@@ -1425,8 +1659,11 @@
       toast('이미 착수하여 게임을 바꿀 수 없습니다');
       return;
     }
-    wsSend({ type: 'gameChangeRequest', game: otherGame(state.game) });
-    toast('상대에게 게임 변경을 요청했습니다');
+    var sel = $('gameChangeSelect');
+    var target = sel && sel.value ? normGame(sel.value) : otherGames(state.game)[0];
+    if (target === state.game) { toast('이미 그 게임입니다'); return; }
+    wsSend({ type: 'gameChangeRequest', game: target });
+    toast(gameName(target) + '(으)로 변경을 요청했습니다');
   });
 
   $('btnJoinRoom').addEventListener('click', function () {
@@ -1741,12 +1978,13 @@
   var resizeTimer = null;
   window.addEventListener('resize', function () {
     if (resizeTimer) clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(function () { lastInnerW = -1; renderBoard(); }, 80);
+    resizeTimer = setTimeout(function () { lastInnerW = -1; lastInnerH = -1; renderBoard(); }, 80);
     refreshRibbonMenu();   // 리본 드롭다운 좌우 클램프 재계산
   });
 
   // ── ResizeObserver: 컨테이너 기인 크기 변화 대응 ──────────
   var lastInnerW = -1;      // 마지막으로 렌더한 boardInner 폭(px, 반올림)
+  var lastInnerH = -1;      // 높이도 함께 본다 (사목은 정사각이 아니라 비율이 바뀐다)
   var roScheduled = false;  // rAF 디바운스
   if (typeof window.ResizeObserver === 'function') {
     var ro = new window.ResizeObserver(function () {
@@ -1754,12 +1992,13 @@
       roScheduled = true;
       window.requestAnimationFrame(function () {
         roScheduled = false;
-        var w = Math.round(boardInner.getBoundingClientRect().width);
-        // 무한 루프 방지: 실제로 폭이 달라졌을 때만 재렌더한다.
+        var box = boardInner.getBoundingClientRect();
+        var w = Math.round(box.width), h = Math.round(box.height);
+        // 무한 루프 방지: 실제로 크기가 달라졌을 때만 재렌더한다.
         // (재렌더는 boardInner 안의 절대배치 자식만 바꾸므로 boardInner 자체 크기는
         //  변하지 않지만, 혹시 모를 되먹임을 위해 가드를 둔다.)
-        if (!w || w === lastInnerW) return;
-        lastInnerW = w;
+        if (!w || !h || (w === lastInnerW && h === lastInnerH)) return;
+        lastInnerW = w; lastInnerH = h;
         renderBoard();
       });
     });
@@ -1891,11 +2130,12 @@
     var savedRule = localStorage.getItem('omok_rule');
     if (savedRule === 'free' || savedRule === 'renju') state.rule = savedRule;
     var savedGame = localStorage.getItem('omok_game');
-    if (savedGame === 'othello' || savedGame === 'omok') state.game = savedGame;
+    if (GAMES.indexOf(savedGame) !== -1) state.game = savedGame;
     var savedTheme = localStorage.getItem('omok_theme');
 
     // 저장된 게임에 맞춰 보드/레이아웃 초기화
-    SIZE = boardSize();
+    ROWS = boardRows();
+    COLS = boardCols();
     state.board = newBoard();
 
     // 푸터
