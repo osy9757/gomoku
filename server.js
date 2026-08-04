@@ -206,6 +206,22 @@ function resetRoomBoard(room) {
   room.turn = M.BLACK;
   room.moves = [];
   room.poker = null;
+  room.over = false;      // 종료 상태도 함께 지운다 (새 판은 항상 진행 중)
+  room.winner = null;
+}
+
+// 판이 끝났다 / 되살아났다 (2인 보드 방 전용).
+// 끝난 방은 착수를 받지 않지만 **없어지지는 않는다** — 무르기가 수락되면
+// 되살아나 그대로 이어서 둘 수 있다.
+function markRoomOver(room, winner) {
+  room.over = true;
+  room.winner = typeof winner === 'number' ? winner : null;
+}
+function reviveRoom(room) {
+  const was = !!room.over;
+  room.over = false;
+  room.winner = null;
+  return was;
 }
 
 wss.on('connection', (ws) => {
@@ -272,6 +288,8 @@ wss.on('connection', (ws) => {
           turn: M.BLACK,
           moves: [],
           poker: null,
+          over: false,         // 판이 끝났는가 (승/무). 무르기로 되살릴 수 있다.
+          winner: null,        // 1/2/0(무승부)/null
           pendingGame: null,   // 합의 대기 중인 "바꿀 종목"
           players: [{ ws: ws, color: creatorColor }]
         };
@@ -415,6 +433,12 @@ wss.on('connection', (ws) => {
         if (isTableRoom(room)) return;  // 카드 게임에는 착수가 없다
         const me = playerOf(room, ws);
         if (!me) return;
+        // 끝난 판에는 둘 수 없다. 화면은 그대로 남고, 무르기(합의)나
+        // 재대국으로만 다시 진행할 수 있다.
+        if (room.over) {
+          send(ws, { type: 'invalid', reason: 'finished' });
+          return;
+        }
         if (me.color !== room.turn) return; // 내 차례 아님
         const r = msg.row | 0;
         const c = msg.col | 0;
@@ -434,6 +458,7 @@ wss.on('connection', (ws) => {
           const draw = !winCells && Connect4.isFull(room.board);
           const opp = me.color === Rules.BLACK ? Rules.WHITE : Rules.BLACK;
           if (!winCells && !draw) room.turn = opp;
+          else markRoomOver(room, winCells ? me.color : 0);
           broadcast(room, {
             type: 'move',
             game: 'connect4',
@@ -466,6 +491,7 @@ wss.on('connection', (ws) => {
             over = true;
             winner = Othello.winner(room.board);
             nextColor = null;
+            markRoomOver(room, winner);
           } else if (!oppHas) {
             passed = true;
             room.turn = me.color;             // 상대가 패스, 턴 유지
@@ -501,6 +527,9 @@ wss.on('connection', (ws) => {
         const colorStr = colorToStr(me.color);
         const win = Rules.checkWinAt(room.board, r, c, me.color, room.rule);
         room.turn = me.color === Rules.BLACK ? Rules.WHITE : Rules.BLACK;
+        // 오목의 무승부 = 판이 가득 참 (클라이언트와 같은 판정)
+        const boardFull = !win && room.moves.length >= room.board.length * room.board[0].length;
+        if (win || boardFull) markRoomOver(room, win ? me.color : 0);
         broadcast(room, { type: 'move', row: r, col: c, color: colorStr, win: win });
         break;
       }
@@ -537,6 +566,10 @@ wss.on('connection', (ws) => {
         if (!room) return;
         if (isTableRoom(room)) return;
         if (msg.accept) {
+          // 끝난 판이었다면 무르기가 방을 되살린다(부활).
+          // 승부가 났다는 사실은 마지막 수에 붙어 있으므로, 그 수를
+          // 물리는 것만으로 판은 다시 진행 중이 된다.
+          const revived = reviveRoom(room);
           if (room.game === 'othello') {
             // 후행 패스 엔트리 제거 후 마지막 실착수 되돌리기
             while (room.moves.length > 0 && room.moves[room.moves.length - 1].kind === 'pass') {
@@ -554,7 +587,9 @@ wss.on('connection', (ws) => {
               game: 'othello',
               board: room.board,
               turn: colorToStr(room.turn),
-              counts: Othello.counts(room.board)
+              counts: Othello.counts(room.board),
+              over: false,
+              revived: revived
             });
           } else {
             if (room.moves.length > 0) {
@@ -562,7 +597,13 @@ wss.on('connection', (ws) => {
               room.board[last.row][last.col] = Rules.EMPTY;
               room.turn = last.color; // 무른 사람 차례로 복귀
             }
-            broadcast(room, { type: 'undo' });
+            broadcast(room, {
+              type: 'undo',
+              game: room.game,
+              turn: colorToStr(room.turn),
+              over: false,
+              revived: revived
+            });
           }
         } else {
           const opp = opponentOf(room, ws);

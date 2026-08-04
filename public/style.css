@@ -1323,6 +1323,18 @@ body.theme-excel .move-row.log-head { color: #217346; }
 .modal-stone.draw { background: linear-gradient(135deg, #4a4a4a 0 50%, #e4e4e4 50% 100%); }
 .modal-title { font-family: var(--font-serif); font-size: clamp(20px, 5.5vw, 28px); margin: 6px 0 8px; }
 .modal-message { color: var(--ink-soft); font-size: clamp(12px, 3.4vw, 14px); margin: 0 0 20px; }
+/* 결과 모달 버튼 줄. 보드 게임은 [닫기][새 게임] 두 칸, 카드 게임은 한 칸.
+   좁은 화면에서는 세로로 접힌다 (버튼 글자가 잘리지 않게). */
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.modal-actions .btn {
+  flex: 1 1 130px;
+  min-width: 0;
+}
 
 /* ---------- 토스트 ---------- */
 .toast {

@@ -1537,6 +1537,199 @@ const isDrop = (r, c) => (m) => m.type === 'move' && m.game === 'connect4' && m.
     await wait(80);
   }
 
+  // ============================================================
+  // 47. 종료 후 무르기(오목): 승리로 끝난 방을 무르기로 되살린다.
+  //     게임이 끝나도 방이 잠기지 않는다 — 수락된 무르기는
+  //     이긴 수를 물리고 양쪽에게 "부활" 을 알린다.
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await omokRoom('free');
+    // 흑 (7,0)~(7,4) 5목 / 백은 0행에 흩어 둔다
+    const BS = [[7, 0], [0, 0], [7, 1], [0, 1], [7, 2], [0, 2], [7, 3], [0, 3], [7, 4]];
+    for (let i = 0; i < BS.length; i++) {
+      const mover = i % 2 === 0 ? black : white;
+      send(mover, { type: 'move', row: BS[i][0], col: BS[i][1] });
+      await until(bm, isMove(BS[i][0], BS[i][1]));
+      await until(wm, isMove(BS[i][0], BS[i][1]));
+    }
+    const winMsg = bm.find((m) => m.type === 'move' && m.win === true);
+    assert('종료후 무르기(오목): 흑 5목 승리 브로드캐스트',
+      !!winMsg && winMsg.color === 'black' && winMsg.row === 7 && winMsg.col === 4, winMsg);
+
+    // 끝난 판에는 더 이상 둘 수 없다 (서버도 종료 상태를 안다)
+    wm.length = 0; bm.length = 0;
+    send(white, { type: 'move', row: 0, col: 4 });
+    await wait(120);
+    assert('종료후: 끝난 판 착수 거부(브로드캐스트 없음)',
+      !bm.some((m) => m.type === 'move') && !wm.some((m) => m.type === 'move'));
+    assert('종료후: 끝난 판 착수 invalid(finished)',
+      wm.some((m) => m.type === 'invalid' && m.reason === 'finished'),
+      wm.filter((m) => m.type === 'invalid'));
+
+    // 진 쪽(백)이 무르기를 요청하고 이긴 쪽(흑)이 수락한다
+    wm.length = 0; bm.length = 0;
+    send(white, { type: 'undoRequest' });
+    await until(bm, (m) => m.type === 'undoRequest');
+    assert('종료후: 게임이 끝나도 무르기 요청이 전달된다', true);
+    send(black, { type: 'undoResponse', accept: true });
+    const ub = await until(bm, (m) => m.type === 'undo');
+    const uw = await until(wm, (m) => m.type === 'undo');
+    assert('종료후 무르기(오목): 양쪽 undo 수신', !!ub && !!uw);
+    assert('종료후 무르기(오목): 부활 플래그',
+      ub.revived === true && uw.revived === true && ub.over === false && uw.over === false,
+      { b: ub.revived, w: uw.revived, o: ub.over });
+    assert('종료후 무르기(오목): 무른 사람(흑) 차례로 복귀',
+      ub.turn === 'black' && uw.turn === 'black', { b: ub.turn, w: uw.turn });
+    assert('종료후 무르기(오목): game 필드', ub.game === 'omok', ub.game);
+
+    // 되살아난 판에서 흑이 다른 자리에 두면 정상 수용된다
+    bm.length = 0; wm.length = 0;
+    send(black, { type: 'move', row: 9, col: 9 });
+    const again = await until(wm, isMove(9, 9));
+    assert('종료후 무르기(오목): 부활 후 재착수 수용',
+      again.color === 'black' && again.win === false, { c: again.color, w: again.win });
+    // 백도 이어서 둘 수 있다 (턴이 정상 순환한다)
+    wm.length = 0; bm.length = 0;
+    send(white, { type: 'move', row: 0, col: 4 });
+    const wAgain = await until(bm, isMove(0, 4));
+    assert('종료후 무르기(오목): 부활 후 상대도 이어서 둔다', wAgain.color === 'white', wAgain.color);
+    black.close(); white.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 48. 종료 후 무르기(오델로): 60수로 끝난 판을 되살린다.
+  //     뒤집힘까지 복원된 보드를 양쪽에 내려주고 다시 둘 수 있다.
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await othelloRoom();
+    let board = Othello.createBoard();
+    let turn = Othello.BLACK;
+    let over = null, plies = 0;
+    let beforeLast = null, lastMove = null, lastTurn = null;
+    while (plies < 80) {
+      const ms = Othello.legalMoves(board, turn);
+      if (!ms.length) break;
+      const mover = turn === Othello.BLACK ? black : white;
+      beforeLast = board.map((r) => r.slice());
+      lastMove = ms[0]; lastTurn = turn;
+      send(mover, { type: 'move', row: ms[0].row, col: ms[0].col });
+      const m = await until(bm, isMove(ms[0].row, ms[0].col), 5000);
+      await until(wm, isMove(ms[0].row, ms[0].col), 5000);
+      board = Othello.applyMove(board, ms[0].row, ms[0].col, turn).board;
+      plies++;
+      if (m.over) { over = m; break; }
+      turn = m.nextTurn === 'black' ? Othello.BLACK : Othello.WHITE;
+    }
+    assert('종료후 무르기(오델로): 판이 끝났다', over !== null && over.over === true, plies);
+
+    bm.length = 0; wm.length = 0;
+    send(white, { type: 'move', row: 0, col: 0 });
+    await wait(120);
+    assert('종료후(오델로): 끝난 판 착수 거부',
+      !bm.some((m) => m.type === 'move') &&
+      wm.some((m) => m.type === 'invalid' && m.reason === 'finished'),
+      wm.filter((m) => m.type === 'invalid'));
+
+    bm.length = 0; wm.length = 0;
+    send(white, { type: 'undoRequest' });
+    await until(bm, (m) => m.type === 'undoRequest');
+    send(black, { type: 'undoResponse', accept: true });
+    const ob = await until(bm, (m) => m.type === 'undo');
+    const ow = await until(wm, (m) => m.type === 'undo');
+    assert('종료후 무르기(오델로): 부활 플래그',
+      ob.revived === true && ow.revived === true && ob.over === false, { r: ob.revived, o: ob.over });
+    const same = (a, b) => a.every((row, r) => row.every((v, c) => v === b[r][c]));
+    assert('종료후 무르기(오델로): 뒤집힘까지 복원된 보드',
+      ob.board && same(beforeLast, ob.board), ob.board && ob.board[lastMove.row][lastMove.col]);
+    assert('종료후 무르기(오델로): 되돌린 자리는 빈 칸',
+      ob.board[lastMove.row][lastMove.col] === Othello.EMPTY);
+    assert('종료후 무르기(오델로): 집계도 복원',
+      ob.counts.black === Othello.counts(beforeLast).black &&
+      ob.counts.white === Othello.counts(beforeLast).white, ob.counts);
+    assert('종료후 무르기(오델로): 무른 사람 차례로 복귀',
+      ob.turn === (lastTurn === Othello.BLACK ? 'black' : 'white'), ob.turn);
+
+    // 되살아난 판에서 같은 자리에 다시 둘 수 있다
+    bm.length = 0; wm.length = 0;
+    const remover = lastTurn === Othello.BLACK ? black : white;
+    send(remover, { type: 'move', row: lastMove.row, col: lastMove.col });
+    const re = await until(wm, isMove(lastMove.row, lastMove.col), 5000);
+    assert('종료후 무르기(오델로): 부활 후 재착수 수용',
+      re.color === (lastTurn === Othello.BLACK ? 'black' : 'white') && re.flipped.length > 0,
+      { c: re.color, f: re.flipped && re.flipped.length });
+    black.close(); white.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 49. 종료 후 무르기(사목): 4목으로 끝난 판도 되살아난다
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await c4Room();
+    const SEQ = [0, 6, 1, 6, 2, 6, 3];   // 흑 바닥 0~3열 = 가로 4목
+    for (let i = 0; i < SEQ.length; i++) {
+      const mover = i % 2 === 0 ? black : white;
+      const expRow = SEQ[i] === 6 ? 5 - Math.floor(i / 2) : 5;
+      send(mover, { type: 'move', col: SEQ[i] });
+      await until(bm, isDrop(expRow, SEQ[i]));
+      await until(wm, isDrop(expRow, SEQ[i]));
+    }
+    bm.length = 0; wm.length = 0;
+    send(white, { type: 'move', col: 5 });
+    await wait(120);
+    assert('종료후(사목): 끝난 판 착수 거부',
+      !bm.some((m) => m.type === 'move') &&
+      wm.some((m) => m.type === 'invalid' && m.reason === 'finished'));
+
+    bm.length = 0; wm.length = 0;
+    send(white, { type: 'undoRequest' });
+    await until(bm, (m) => m.type === 'undoRequest');
+    send(black, { type: 'undoResponse', accept: true });
+    const cb = await until(bm, (m) => m.type === 'undo');
+    const cw = await until(wm, (m) => m.type === 'undo');
+    assert('종료후 무르기(사목): 부활 + 무른 사람(흑) 차례',
+      cb.revived === true && cw.revived === true && cb.turn === 'black' && cb.over === false,
+      { r: cb.revived, t: cb.turn });
+    bm.length = 0; wm.length = 0;
+    send(black, { type: 'move', col: 4 });
+    const drop = await until(wm, isDrop(5, 4));
+    assert('종료후 무르기(사목): 부활 후 재착수 수용',
+      drop.color === 'black' && drop.win === false, { c: drop.color, w: drop.win });
+    black.close(); white.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 50. 종료 후 재대국(restart) 은 종료 상태를 깨끗이 지운다
+  //     (무르기로 되살리지 않고 새 판으로 가는 경로)
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await omokRoom('free');
+    const BS = [[7, 0], [0, 0], [7, 1], [0, 1], [7, 2], [0, 2], [7, 3], [0, 3], [7, 4]];
+    for (let i = 0; i < BS.length; i++) {
+      const mover = i % 2 === 0 ? black : white;
+      send(mover, { type: 'move', row: BS[i][0], col: BS[i][1] });
+      await until(bm, isMove(BS[i][0], BS[i][1]));
+      await until(wm, isMove(BS[i][0], BS[i][1]));
+    }
+    bm.length = 0; wm.length = 0;
+    send(white, { type: 'restartRequest' });
+    await until(bm, (m) => m.type === 'restartRequest');
+    send(black, { type: 'restartResponse', accept: true });
+    const rb = await until(bm, (m) => m.type === 'restart');
+    const rw = await until(wm, (m) => m.type === 'restart');
+    assert('종료후 재대국: 색 교대', rb.color === 'white' && rw.color === 'black', { b: rb.color, w: rw.color });
+    // 색이 바뀌었으므로 새 흑 = 이전 백 소켓
+    bm.length = 0; wm.length = 0;
+    send(white, { type: 'move', row: 7, col: 7 });
+    const first = await until(bm, isMove(7, 7));
+    assert('종료후 재대국: 새 판에서 정상 착수',
+      first.color === 'black' && first.win === false, { c: first.color, w: first.win });
+    black.close(); white.close();
+    await wait(60);
+  }
+
   console.log('\n결과: ' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail === 0 ? 0 : 1);
 })();

@@ -269,12 +269,18 @@
   </div>
 
   <!-- 결과 모달 -->
-  <div class="modal-backdrop" id="resultModal" hidden>
-    <div class="modal-card">
+  <!-- 보드 게임(오목/오델로/사목)에서는 [닫기][새 게임] 두 버튼이 보인다.
+       닫기는 판을 그대로 남긴 채 모달만 치운다 (무르기로 이어 둘 수 있다).
+       카드 게임(포커/인디언포커)에서는 닫기가 숨겨져 기존 그대로 동작한다. -->
+  <div class="modal-backdrop" id="resultModal" data-kind="board" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
       <span class="modal-stone" id="modalStone"></span>
       <h2 class="modal-title" id="modalTitle">흑돌 승리!</h2>
       <p class="modal-message" id="modalMessage"></p>
-      <button class="btn btn-green" id="btnPlayAgain" type="button"><svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M6 4h8v4a4 4 0 0 1-8 0V4z"/><path d="M6 5H3.5A2.5 2.5 0 0 0 6 8"/><path d="M14 5h2.5A2.5 2.5 0 0 1 14 8"/><line x1="10" y1="12" x2="10" y2="15"/><line x1="7" y1="16.5" x2="13" y2="16.5"/></svg><span id="playAgainLabel">다시 하기</span></button>
+      <div class="modal-actions" id="modalActions">
+        <button class="btn btn-gray" id="btnCloseResult" type="button" hidden><svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><line x1="5.5" y1="5.5" x2="14.5" y2="14.5"/><line x1="14.5" y1="5.5" x2="5.5" y2="14.5"/></svg><span id="closeResultLabel">닫기</span></button>
+        <button class="btn btn-green" id="btnPlayAgain" type="button"><svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M6 4h8v4a4 4 0 0 1-8 0V4z"/><path d="M6 5H3.5A2.5 2.5 0 0 0 6 8"/><path d="M14 5h2.5A2.5 2.5 0 0 1 14 8"/><line x1="10" y1="12" x2="10" y2="15"/><line x1="7" y1="16.5" x2="13" y2="16.5"/></svg><span id="playAgainLabel">다시 하기</span></button>
+      </div>
     </div>
   </div>
 

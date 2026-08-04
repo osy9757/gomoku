@@ -1227,8 +1227,10 @@
     (m.flipped || []).forEach(function (f) { state.board[f[0]][f[1]] = opp; });
     state.turn = m.color;
     state.lastFlipped = [];
+    // 끝난 판에서도 무를 수 있다 — 종료 상태를 지우고 이어서 진행
     state.gameOver = false;
     state.winner = null;
+    state.winStones = [];
     hideModal();
     renderBoard();
     updateSidebar();
@@ -1247,8 +1249,10 @@
     if (state.moves.length) state.moves.pop();
     state.turn = msg.turn ? colorNum(msg.turn) : state.turn;
     state.lastFlipped = [];
+    // 끝난 판이었어도 무르기로 되살아난다 (종료 표시/모달 정리)
     state.gameOver = false;
     state.winner = null;
+    state.winStones = [];
     hideModal();
     renderBoard();
     updateSidebar();
@@ -1933,6 +1937,8 @@
   function showPokerResultModal() {
     var v = state.poker.view;
     if (!v || !v.over || !v.result) return;
+    // 카드 게임 모달은 예전 그대로다 (닫기 버튼 없음 / 배경·Escape 닫기 없음)
+    setResultModalKind('card');
     if (isIndian()) showIndianResultModal();
     else showPokerTableModal();
   }
@@ -2020,9 +2026,33 @@
   // ============================================================
   // 모달 / 토스트
   // ============================================================
+  // 결과 모달의 성격을 정한다.
+  //   'board' — 오목/오델로/사목: [닫기][새 게임]. 배경/Escape 로도 닫힌다.
+  //             닫아도 판(최종 국면 + 승리선 + 기보 + 상태)은 그대로 남고,
+  //             무르기로 이어 둘 수 있다.
+  //   'card'  — 포커/인디언포커: 기존 그대로 [다음 판]/[새 경기] 하나뿐.
+  //             실수로 닫으면 다시 열 길이 없으므로 배경/Escape 닫기도 없다.
+  function setResultModalKind(kind) {
+    var modal = $('resultModal');
+    var close = $('btnCloseResult');
+    modal.setAttribute('data-kind', kind);
+    if (close) close.hidden = kind !== 'board';
+  }
+  function isBoardResultModal() {
+    var modal = $('resultModal');
+    return !modal.hidden && modal.getAttribute('data-kind') === 'board';
+  }
+  // 결과 모달만 치운다 (게임 상태는 손대지 않는다)
+  function closeResultModal() {
+    if (!isBoardResultModal()) return;
+    hideModal();
+  }
+
   function showResultModal(winner, counts) {
     var modal = $('resultModal');
     var stone = $('modalStone'), title = $('modalTitle'), msg = $('modalMessage');
+    setResultModalKind('board');
+    setPlayAgainLabel('새 게임');
     stone.hidden = false;          // 카드 게임에서 숨겼을 수 있다
     var scoreStr = '';
     if (state.game === 'othello' && counts) {
@@ -2135,13 +2165,17 @@
     }
   });
 
+  // 무르기는 게임이 끝난 뒤에도 쓸 수 있다 (보드 게임 한정).
+  // 마지막 수를 물리면 판이 되살아나 그대로 이어서 둘 수 있다.
   $('btnUndo').addEventListener('click', function () {
     if (isCardGame()) { toast('카드 게임에서는 무르기가 없습니다'); return; }
     if (state.online) {
-      if (!state.started || !state.moves.length) return;
+      if (!state.started) { toast('상대를 기다리는 중입니다'); return; }
+      if (!state.moves.length) { toast('무를 수가 없습니다'); return; }
       wsSend({ type: 'undoRequest' });
       toast('상대에게 무르기를 요청했습니다');
     } else {
+      if (!state.moves.length) { toast('무를 수가 없습니다'); return; }
       localUndo();
     }
   });
@@ -2167,6 +2201,24 @@
     } else {
       localNewGame();
     }
+  });
+
+  // ── 결과 모달 닫기 (보드 게임 전용) ──────────────────────
+  // 게임이 끝나도 초기화를 강요하지 않는다. 닫으면 최종 국면이 그대로
+  // 남고, 무르기로 마지막 수를 물러 이어 둘 수 있다.
+  $('btnCloseResult').addEventListener('click', function () {
+    closeResultModal();
+  });
+  // 어두운 배경(모달 카드 바깥) 클릭
+  $('resultModal').addEventListener('click', function (e) {
+    if (e.target !== this) return;    // 카드 안쪽 클릭은 무시
+    closeResultModal();
+  });
+  // Escape
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape' && e.key !== 'Esc') return;
+    if (!isBoardResultModal()) return;
+    closeResultModal();
   });
 
   // ============================================================
@@ -2498,6 +2550,7 @@
         else if (msg.reason === 'forbidden' && msg.ftype) toast(R.FORBIDDEN_LABEL[msg.ftype] || '금수입니다');
         else if (msg.reason === 'illegal') toast('둘 수 없는 자리입니다');
         else if (msg.reason === 'column-full') toast('그 열은 가득 찼습니다');
+        else if (msg.reason === 'finished') toast('끝난 대국입니다. 무르기나 새 게임을 이용하세요');
         break;
 
       case 'chat':
@@ -2519,9 +2572,11 @@
         if (msg.game === 'othello' || state.game === 'othello') {
           remoteUndoOthello(msg);
         } else {
-          remoteUndo();
+          remoteUndo(msg);
         }
-        addChatSystem('무르기가 적용되었습니다.');
+        addChatSystem(msg.revived
+          ? '무르기가 적용되어 대국을 이어서 진행합니다.'
+          : '무르기가 적용되었습니다.');
         break;
 
       case 'undoRejected':
@@ -2630,15 +2685,18 @@
     renderMoveList();
   }
 
-  function remoteUndo() {
-    if (!state.moves.length) return;
-    var last = state.moves.pop();
-    state.board[last.row][last.col] = EMPTY;
+  // 서버가 수락한 무르기 반영 (오목/사목).
+  // 끝난 판에서 온 무르기면 종료 상태까지 지워 판을 되살린다(부활).
+  // 차례는 서버가 알려 준 값을 우선한다 — 양쪽 화면이 절대 갈리지 않게.
+  function remoteUndo(msg) {
+    var last = state.moves.length ? state.moves.pop() : null;
+    if (last) state.board[last.row][last.col] = EMPTY;
     state.gameOver = false;
     state.winner = null;
     state.winStones = [];
     hideModal();
-    state.turn = last.color;
+    if (msg && msg.turn) state.turn = colorNum(msg.turn);
+    else if (last) state.turn = last.color;
     renderBoard();
     updateSidebar();
     renderMoveList();

@@ -188,6 +188,7 @@ Chrome 은 미디어 쿼리를 `window.innerWidth`(클래식 스크롤바 포함
 | 로비 — 코드 입력 + 참가 | `.join-row{flex-wrap:wrap}`, input `flex:1 1 120px; min-width:0`, 버튼 `flex:0 0 auto` |
 | 채팅 입력행 | 동일 패턴 (`flex:1 1 120px; min-width:0`) |
 | 결과 모달 | 백드롭 `padding:16px`, 카드 `width:100%; max-width:340px; max-height:calc(100vh - 32px); overflow-y:auto`, 패딩/제목/본문 `clamp()` |
+| 결과 모달 버튼줄 | `.modal-actions{display:flex; gap:8px; flex-wrap:wrap}`, 버튼 `flex:1 1 130px; min-width:0` → 320px 에서는 [닫기][새 게임]이 세로로 접힌다 |
 | 토스트 | `max-width: calc(100vw - 32px)`, `overflow-wrap:anywhere` |
 | 그리드 | 3열을 `minmax(320px,1fr)` → `minmax(0,1fr)` 로 (min-content 로 인한 열 확장 차단) |
 | 접근성 | `@media (prefers-reduced-motion: reduce)` 에서 보드 전환/돌 애니메이션 해제 |
