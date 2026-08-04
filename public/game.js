@@ -1456,6 +1456,7 @@
     } else {
       el.className = 'pcard' + (K.isRed(card) ? ' red' : '') +
         (opts.mine && !card.open ? ' mine-hidden' : '') +
+        (opts.mine && card.open ? ' mine-open' : '') +
         (opts.won ? ' won' : '');
       cell.textContent = K.cardText(card);
       el.appendChild(makeCorner('tl', card));
@@ -1490,19 +1491,60 @@
     return el;
   }
 
+  // 라벨이 붙은 카드 묶음 하나 ('비공개 · 나만 봄' / '공개 · 상대에게 보임').
+  function makeCardGroup(label, extraClass) {
+    var g = document.createElement('div');
+    g.className = 'pc-group' + (extraClass ? ' ' + extraClass : '');
+    var l = document.createElement('span');
+    l.className = 'pc-group-label';
+    l.textContent = label;
+    g.appendChild(l);
+    return g;
+  }
+
   function renderHandCards(host, v, idx, mine, pickable) {
     host.innerHTML = '';
     if (!v) return;
     var indian = isIndian();
-    v.hands[idx].cards.forEach(function (card, i) {
+    var cards = v.hands[idx].cards;
+
+    function buildCardEl(card, i) {
       var el = indian ? makeIndianCardEl(card, mine) : makeCardEl(card, { mine: mine });
       el.setAttribute('data-idx', String(i));
       if (pickable) {
         el.classList.add('selectable');
         el.addEventListener('click', function () { pokerPick(i); });
       }
-      host.appendChild(el);
+      return el;
+    }
+
+    // 내 카드이고 (인디언포커 제외), 오픈된 카드가 하나라도 있으면
+    // '비공개' / '공개' 두 묶음으로 나눠 보여준다. 오픈 전(매장/오픈 선택 단계)에는
+    // 지금처럼 한 줄로만 보여줘 선택 UX 를 그대로 유지한다.
+    var showGroups = mine && !indian && cards.some(function (c) { return c && c.open; });
+
+    if (!showGroups) {
+      cards.forEach(function (card, i) {
+        host.appendChild(buildCardEl(card, i));
+      });
+      return;
+    }
+
+    var hiddenGroup = makeCardGroup('비공개 · 나만 봄');
+    var openGroup = makeCardGroup('공개 · 상대에게 보임', 'pc-group-open');
+    cards.forEach(function (card, i) {
+      var el = buildCardEl(card, i);
+      (card && card.open ? openGroup : hiddenGroup).appendChild(el);
     });
+    // 각 묶음은 라벨(span) 한 개를 이미 갖고 있으므로 childElementCount > 1 이어야
+    // 실제 카드가 들어 있는 것이다. flex-grow 를 카드 수에 비례시켜
+    // 두 묶음의 카드 폭이 동일해지도록 한다 (.pcard 는 flex:1 1 0).
+    var nHidden = hiddenGroup.childElementCount - 1;
+    var nOpen = openGroup.childElementCount - 1;
+    hiddenGroup.style.flex = nHidden + ' 1 0%';
+    openGroup.style.flex = nOpen + ' 1 0%';
+    if (nHidden > 0) host.appendChild(hiddenGroup);
+    if (nOpen > 0) host.appendChild(openGroup);
   }
 
   function pokerPhaseText(v) {
