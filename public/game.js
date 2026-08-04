@@ -2708,6 +2708,7 @@
   });
 
   $('joinCodeInput').addEventListener('keydown', function (e) {
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter') $('btnJoinRoom').click();
   });
 
@@ -2742,6 +2743,7 @@
   }
   $('btnSendChat').addEventListener('click', sendChat);
   $('chatInput').addEventListener('keydown', function (e) {
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter') sendChat();
   });
 
