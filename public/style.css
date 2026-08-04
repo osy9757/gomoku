@@ -43,6 +43,49 @@ html, body {
 
 [hidden] { display: none !important; }
 
+/* ---------- 키보드 포커스 (focus-visible) ---------- */
+:focus { outline: none; }
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.btn:focus-visible, .mode-tab:focus-visible, .ct-btn:focus-visible,
+.theme-toggle:focus-visible, .ribbon-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+input[type="text"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+input[type="radio"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 50%;
+}
+body.theme-excel :focus-visible,
+body.theme-excel .btn:focus-visible,
+body.theme-excel .mode-tab:focus-visible,
+body.theme-excel .ct-btn:focus-visible,
+body.theme-excel .theme-toggle:focus-visible,
+body.theme-excel .ribbon-tab:focus-visible,
+body.theme-excel input[type="text"]:focus-visible {
+  outline: 2px solid #217346;
+  outline-offset: 1px;
+  border-radius: 2px;
+}
+
+/* ---------- 인라인 아이콘 공통 ---------- */
+.ico {
+  display: inline-block;
+  vertical-align: -3px;
+  flex-shrink: 0;
+}
+.player-chips .ico, .seat-chips .ico { vertical-align: -2px; margin-right: 3px; }
+.theme-toggle .ico { vertical-align: -3px; margin-right: 5px; }
+.gate-icon .ico { display: block; margin: 0 auto 2px; }
+
 body {
   font-family: var(--font-sans);
   color: var(--ink);

@@ -180,6 +180,9 @@
   }
   function colorStr(c) { return c === BLACK ? 'black' : 'white'; }
   function colorNum(s) { return s === 'black' ? BLACK : WHITE; }
+  // 칩 아이콘 (인라인 SVG — 이모지 대신 아이콘 체계와 통일)
+  var COIN_ICO = '<svg class="ico" width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="10" cy="10" r="7.5"/><circle cx="10" cy="10" r="4" stroke-width="1.2" opacity="0.6"/></svg>';
+  function setChips(el, n) { el.innerHTML = COIN_ICO + ' ' + Number(n); }
   function coordLabel(row, col) {
     if (state.game === 'othello') {
       // 오델로 표준 표기: a-h(소문자) + 1-8 (위에서 아래로)
@@ -749,7 +752,7 @@
       sst.textContent = st || (actor === i ? '생각 중...' : '');
       var chips = document.createElement('span');
       chips.className = 'seat-chips';
-      chips.textContent = '🪙 ' + (v ? v.chips[i] : seatLobbyChips(i));
+      setChips(chips, v ? v.chips[i] : seatLobbyChips(i));
       row.appendChild(icon);
       row.appendChild(nm);
       row.appendChild(sst);
@@ -783,8 +786,8 @@
     if (isCardGame()) {
       var pv = state.poker.view;
       var pchips = pv ? pv.chips : [PE().START_CHIPS, PE().START_CHIPS];
-      $('chipsBlack').textContent = '🪙 ' + pchips[0];
-      $('chipsWhite').textContent = '🪙 ' + pchips[1];
+      setChips($('chipsBlack'), pchips[0]);
+      setChips($('chipsWhite'), pchips[1]);
     } else {
       $('timerBlack').textContent = fmtTime(state.times[BLACK]);
       $('timerWhite').textContent = fmtTime(state.times[WHITE]);
@@ -893,7 +896,7 @@
       }
       var c = document.createElement('span');
       c.className = 'tp-chips';
-      c.textContent = '🪙 ' + p.chips;
+      setChips(c, p.chips);
       row.appendChild(c);
       list.appendChild(row);
     });
@@ -1647,8 +1650,7 @@
     }
     var chips = document.createElement('span');
     chips.className = 'ct-pod-chips';
-    chips.textContent = '🪙 ' +
-      (v ? v.chips[i] : (state.online ? seatLobbyChips(i) : PE().START_CHIPS));
+    setChips(chips, v ? v.chips[i] : (state.online ? seatLobbyChips(i) : PE().START_CHIPS));
     head.appendChild(chips);
     pod.appendChild(head);
 
@@ -2964,7 +2966,7 @@
     state.theme = theme;
     document.body.classList.toggle('theme-excel', theme === 'excel');
     // 엑셀 테마에서는 리본 메뉴 안에 놓이므로 이모지 없이 "엑셀스러운" 라벨을 쓴다
-    $('themeToggle').textContent = theme === 'excel' ? '테마: 엑셀' : '🎨 테마: 기본';
+    $('themeLabel').textContent = theme === 'excel' ? '테마: 엑셀' : '테마: 기본';
     localStorage.setItem('omok_theme', theme);
     // 컨트롤 위치(패널 ↔ 리본 메뉴) 전환
     if (theme === 'excel') moveControlsIntoRibbon();
