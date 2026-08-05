@@ -14,12 +14,13 @@ const WebSocket = require('ws');
 const Rules = require('./public/rules.js');
 const Othello = require('./public/othello.js');
 const Connect4 = require('./public/connect4.js');
+const Alkkagi = require('./public/alkkagi.js');
 const Cards = require('./public/cards.js');
 const Poker = require('./public/sevenpoker.js');
 const Indian = require('./public/indianpoker.js');
 
 // 지원 종목 (게임 생성/변경에서 공용으로 쓰는 화이트리스트)
-const GAMES = ['omok', 'othello', 'connect4', 'poker', 'indian'];
+const GAMES = ['omok', 'othello', 'connect4', 'alkkagi', 'poker', 'indian'];
 // 테이블 방(2~6인 좌석제) 종목 = 카드 엔진을 쓰는 종목.
 // 포커는 2명이 앉으면 그대로 헤즈업(1:1)이 된다 — 예전의 별도 종목이었던
 // '맞포커'는 포커 2인으로 흡수됐다.
@@ -48,9 +49,13 @@ function roomEngine(room) {
 }
 
 // 방의 게임 종류에 맞는 규칙 모듈 반환
+// 방의 게임 종류에 맞는 규칙 모듈 반환.
+// 알까기는 격자 보드가 아니라 물리 상태(돌 좌표 목록)를 room.board 에 담는다.
+// createBoard()/BLACK 이름을 맞춰 두었기 때문에 방 생성/리셋 경로는 그대로 쓴다.
 function gameModule(game) {
   if (game === 'othello') return Othello;
   if (game === 'connect4') return Connect4;
+  if (game === 'alkkagi') return Alkkagi;
   return Rules;
 }
 function colorToStr(c) {
@@ -443,6 +448,47 @@ wss.on('connection', (ws) => {
         const r = msg.row | 0;
         const c = msg.col | 0;
 
+        // ── 알까기(Alkkagi) ───────────────────────────────
+        // 메시지에는 "어느 돌을 어느 방향으로 얼마나 세게" 만 담긴다.
+        // 서버가 파워를 자르고 결정적 시뮬레이션을 돌려 최종 상태를 만든다.
+        // 두 클라이언트는 같은 입력을 로컬에서 다시 굴려 애니메이션만 그리고,
+        // 끝나면 여기서 온 final 로 스냅한다(어떤 이유로도 화면이 갈리지 않게).
+        if (room.game === 'alkkagi') {
+          if (msg.kind !== 'flick') return;
+          const sid = msg.stoneId | 0;
+          const rawVx = Number(msg.vx), rawVy = Number(msg.vy);
+          const chk = Alkkagi.validateFlick(room.board, me.color, sid, rawVx, rawVy);
+          if (!chk.ok) {
+            send(ws, { type: 'invalid', reason: chk.reason, stoneId: sid });
+            return;
+          }
+          const v = Alkkagi.clampVector(rawVx, rawVy);   // 클라이언트 값은 믿지 않는다
+          const before = Alkkagi.serialize(room.board);  // 무르기용 스냅샷
+          const sim = Alkkagi.simulate(room.board, { stoneId: sid, vx: v.vx, vy: v.vy });
+          room.board = sim.finalState;
+          room.turn = sim.finalState.turn;
+          room.moves.push({
+            kind: 'flick', color: me.color, stoneId: sid,
+            vx: v.vx, vy: v.vy, snapshot: before, events: sim.events
+          });
+          const awinner = sim.finalState.winner;
+          if (awinner !== null) markRoomOver(room, awinner);
+          broadcast(room, {
+            type: 'move',
+            game: 'alkkagi',
+            kind: 'flick',
+            stoneId: sid,
+            vx: v.vx, vy: v.vy,
+            color: colorToStr(me.color),
+            final: Alkkagi.serialize(sim.finalState),
+            events: sim.events,
+            ticks: sim.ticks,
+            winner: awinner,
+            turn: colorToStr(sim.finalState.turn)
+          });
+          break;
+        }
+
         // ── 사목(Connect Four) ────────────────────────────
         // 메시지는 열(col)만 담는다. 착지 행은 서버가 계산해서
         // 브로드캐스트에 담아 두 클라이언트가 동일하게 그리도록 한다.
@@ -570,6 +616,24 @@ wss.on('connection', (ws) => {
           // 승부가 났다는 사실은 마지막 수에 붙어 있으므로, 그 수를
           // 물리는 것만으로 판은 다시 진행 중이 된다.
           const revived = reviveRoom(room);
+          // 알까기: 착수 한 번이 물리 시뮬레이션 전체라 "역재생"이 불가능하다.
+          // 대신 치기 직전 스냅샷을 그대로 되돌리고 전체 상태를 방송한다.
+          if (room.game === 'alkkagi') {
+            if (room.moves.length > 0) {
+              const last = room.moves.pop();
+              room.board = Alkkagi.deserialize(last.snapshot);
+              room.turn = last.color;   // 무른 사람 차례로 복귀
+            }
+            broadcast(room, {
+              type: 'undo',
+              game: 'alkkagi',
+              state: Alkkagi.serialize(room.board),
+              turn: colorToStr(room.turn),
+              over: false,
+              revived: revived
+            });
+            break;
+          }
           if (room.game === 'othello') {
             // 후행 패스 엔트리 제거 후 마지막 실착수 되돌리기
             while (room.moves.length > 0 && room.moves[room.moves.length - 1].kind === 'pass') {
@@ -609,6 +673,37 @@ wss.on('connection', (ws) => {
           const opp = opponentOf(room, ws);
           if (opp) send(opp.ws, { type: 'undoRejected' });
         }
+        break;
+      }
+
+      // ── 알까기 조준 중계 (표시 전용) ─────────────────────
+      // 상대가 지금 어느 돌을 어느 방향으로 당기고 있는지 실시간으로 보여 준다.
+      // 게임 상태를 바꾸지 않으므로 검증할 것이 없다(방 소속만 확인).
+      // 다만 드래그 중 초당 수십 개가 올 수 있어 가볍게 솎아낸다.
+      case 'aim': {
+        const room = rooms.get(ws.roomCode);
+        if (!room) return;
+        if (isTableRoom(room)) return;
+        if (room.game !== 'alkkagi') return;
+        const me = playerOf(room, ws);
+        if (!me) return;
+        const opp = opponentOf(room, ws);
+        if (!opp) return;
+        if (msg.clear) {
+          ws.aimAt = 0;   // 지우기는 항상 통과 (조준선이 남아 있으면 안 된다)
+          send(opp.ws, { type: 'aim', clear: true, color: colorToStr(me.color) });
+          return;
+        }
+        const now = Date.now();
+        if (ws.aimAt && now - ws.aimAt < 30) return;   // ~30fps 상한
+        ws.aimAt = now;
+        send(opp.ws, {
+          type: 'aim',
+          stoneId: msg.stoneId | 0,
+          dx: Number(msg.dx) || 0,
+          dy: Number(msg.dy) || 0,
+          color: colorToStr(me.color)
+        });
         break;
       }
 

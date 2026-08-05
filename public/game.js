@@ -8,6 +8,7 @@
   var R = window.Rules;
   var O = window.Othello;
   var C = window.Connect4;
+  var AK = window.Alkkagi;      // 알까기 물리 엔진 (서버와 완전히 동일한 모듈)
   var K = window.Cards;         // 카드 공용 유틸 (덱/표기/족보)
   var P = window.SevenPoker;    // 세븐포커 엔진 (로컬 핫시트에서 직접 구동)
   var IP = window.IndianPoker;  // 인디언포커 엔진 (공개 API 모양이 P 와 같다)
@@ -20,9 +21,9 @@
   var OTHELLO_DOTS = [[2, 2], [2, 6], [6, 2], [6, 6]];
 
   // 지원 종목 (순서 = 선택 UI 표시 순서)
-  var GAMES = ['omok', 'othello', 'connect4', 'poker', 'indian'];
+  var GAMES = ['omok', 'othello', 'connect4', 'alkkagi', 'poker', 'indian'];
   var GAME_LABEL = {
-    omok: '오목', othello: '오델로', connect4: '사목',
+    omok: '오목', othello: '오델로', connect4: '사목', alkkagi: '알까기',
     poker: '포커', indian: '인디언포커'
   };
   // 예전 버전에서 저장된 종목 이름 → 지금 이름.
@@ -50,10 +51,15 @@
   });
   var SEAT_MIN = 2, SEAT_MAX = 6, SEAT_DEFAULT = 3;
 
+  // 알까기: 격자에 두는 게임이 아니라 "돌을 튕기는" 물리 게임.
+  // state.board 에 격자 대신 물리 상태(돌 좌표 목록)가 들어간다.
+  function isAlk(g) { return (g || state.game) === 'alkkagi'; }
+
   // 현재 게임의 규칙 모듈
   function curMod() {
     if (state.game === 'othello') return O;
     if (state.game === 'connect4') return C;
+    if (state.game === 'alkkagi') return AK;
     return R;
   }
   function newBoard() { return curMod().createBoard(); }
@@ -137,6 +143,13 @@
     lastFlipped: [],      // 오델로: 직전 착수로 뒤집힌 좌표 (플립 애니메이션용)
     othelloCounts: { black: 2, white: 2 },
     times: { 1: 0, 2: 0 }, // 초 단위
+    // 알까기 전용 상태 (판 자체는 state.board 에 들어 있다)
+    alk: {
+      anim: null,      // 진행 중인 시뮬레이션 애니메이션
+      aim: null,       // 내가 당기는 중인 조준 {stoneId, vx, vy}
+      oppAim: null,    // 상대가 당기는 중인 조준 (표시 전용)
+      pending: false   // 온라인: 서버 응답을 기다리는 동안 입력 잠금
+    },
     // 카드 게임(포커 / 인디언포커) 전용 상태
     poker: {
       local: null,     // 로컬 모드에서만: 엔진 전체 상태 (양쪽 패를 다 안다)
@@ -684,6 +697,112 @@
     });
   }
 
+  // ── 알까기 렌더링 ─────────────────────────────────────
+  // 돌 위치는 물리 좌표(0..1000)에서 온다. 화면 크기는 배율일 뿐이라
+  // 창을 줄여도(ResizeObserver → renderBoard) 판이 그대로 따라 줄어든다.
+  // 엑셀 테마에서는 헤더(첫 행/열)를 뺀 셀 영역이 곧 판이 된다.
+  function alkPlayArea() {
+    var size = innerSize(), vsize = innerHeight();
+    if (state.theme === 'excel') {
+      var ux = size / (COLS + 1), uy = vsize / (ROWS + 1);
+      return { ox: ux, oy: uy, w: size - ux, h: vsize - uy };
+    }
+    return { ox: 0, oy: 0, w: size, h: vsize };
+  }
+  function alkGeom(x, y) {
+    var a = alkPlayArea();
+    return {
+      x: a.ox + x / AK.BOARD * a.w,
+      y: a.oy + y / AK.BOARD * a.h,
+      d: 2 * AK.RADIUS / AK.BOARD * Math.min(a.w, a.h)
+    };
+  }
+  // 화면 좌표(보드 내부 px) → 물리 좌표
+  function alkFromPx(px, py) {
+    var a = alkPlayArea();
+    return {
+      x: (px - a.ox) / (a.w || 1) * AK.BOARD,
+      y: (py - a.oy) / (a.h || 1) * AK.BOARD
+    };
+  }
+
+  function renderAlkStones() {
+    usePieceKind('alk');
+    var stones = (state.board && state.board.stones) || [];
+    var live = Object.create(null);
+    for (var i = 0; i < stones.length; i++) {
+      var s = stones[i];
+      if (!s.alive) continue;
+      var key = 'a' + s.id;
+      var g = alkGeom(s.x, s.y);
+      var el = pieceEls[key];
+      if (!el) {
+        el = document.createElement('div');
+        el.setAttribute('data-key', key);
+        el.setAttribute('data-color', String(s.owner));
+        el.className = 'stone alk ' + colorStr(s.owner);
+        setPieceGeom(el, g);
+        pieceEls[key] = el;
+        stonesLayer.appendChild(el);
+        if (!state.alk.anim) playEnter(el);   // 굴러가는 중에는 진입 연출 없음
+      } else {
+        setPieceGeom(el, g);
+      }
+      live[key] = true;
+    }
+    alkDropOutPieces(live);
+  }
+
+  // 판 밖으로 나간 돌: 즉시 지우지 않고 잠깐 튕겨 나가는 연출 후 제거한다.
+  function alkDropOutPieces(live) {
+    Object.keys(pieceEls).forEach(function (k) {
+      if (live[k]) return;
+      var el = pieceEls[k];
+      delete pieceEls[k];
+      if (!el) return;
+      el.classList.add('alk-out');
+      window.setTimeout(function () {
+        if (el.parentNode) el.parentNode.removeChild(el);
+      }, 320);
+    });
+  }
+
+  // ── 조준선(슬링샷 화살표) ─────────────────────────────
+  // 내가 당기는 중이면 내 조준을, 아니면 상대가 보내 온 조준을 그린다.
+  // 화면 표시 전용이라 atan2 를 써도 된다 (시뮬레이션에는 절대 쓰지 않는다).
+  var alkAimEl = null;
+  function alkClearAimEl() {
+    if (alkAimEl && alkAimEl.parentNode) alkAimEl.parentNode.removeChild(alkAimEl);
+    alkAimEl = null;
+  }
+  function renderAlkAim() {
+    if (!isAlk()) { alkClearAimEl(); return; }
+    var d = state.alk.aim || state.alk.oppAim;
+    var s = d ? AK.findStone(state.board, d.stoneId) : null;
+    if (!d || !s || !s.alive) { alkClearAimEl(); return; }
+    if (!alkAimEl || !alkAimEl.parentNode) {
+      alkAimEl = document.createElement('div');
+      alkAimEl.className = 'alk-aim';
+      markersLayer.appendChild(alkAimEl);
+    }
+    var g = alkGeom(s.x, s.y);
+    var area = alkPlayArea();
+    var ratio = Math.min(1, AK.power(d.vx, d.vy) / AK.MAX_POWER);
+    var len = g.d * 0.5 + Math.min(area.w, area.h) * 0.3 * ratio;
+    var deg = Math.atan2(d.vy, d.vx) * 180 / Math.PI;
+    alkAimEl.style.left = g.x + 'px';
+    alkAimEl.style.top = g.y + 'px';
+    alkAimEl.style.width = len + 'px';
+    alkAimEl.style.transform = 'translate(0, -50%) rotate(' + deg + 'deg)';
+    alkAimEl.setAttribute('data-power', ratio > 0.7 ? 'high' : (ratio > 0.35 ? 'mid' : 'low'));
+    alkAimEl.classList.toggle('opp', !state.alk.aim);
+  }
+
+  function renderAlkkagi() {
+    renderAlkStones();
+    renderAlkAim();
+  }
+
   function renderBoard() {
     // 카드 게임은 보드를 그리지 않는다 (중앙 영역이 통째로 카드 테이블이다)
     if (isCardGame()) { renderCardTable(); return; }
@@ -698,6 +817,9 @@
     } else if (state.game === 'connect4') {
       renderConnect4();
       renderConnect4Hints();
+    } else if (state.game === 'alkkagi') {
+      // 격자(오목과 같은 15x15)는 장식이고, 돌은 물리 좌표 위에 얹힌다
+      renderAlkkagi();
     } else {
       renderStones();
       renderMarkers();
@@ -818,10 +940,14 @@
     else if (state.winner === WHITE) gs = colorName(WHITE) + ' 승리';
     $('gameStateText').textContent = gs;
 
-    // 오델로 점수 표시
+    // 점수 표시 (오델로: 돌 개수 / 알까기: 판에 남은 돌 개수)
     var scoreRow = $('scoreRow');
     if (scoreRow) {
-      if (state.game === 'othello') {
+      if (isAlk()) {
+        scoreRow.hidden = false;
+        $('scoreBlack').textContent = AK.count(state.board, BLACK);
+        $('scoreWhite').textContent = AK.count(state.board, WHITE);
+      } else if (state.game === 'othello') {
         scoreRow.hidden = false;
         var cnt = O.counts(state.board);
         state.othelloCounts = cnt;
@@ -992,7 +1118,11 @@
     left.textContent = txt;
 
     var NB = '\u00a0';   // NBSP (엑셀 상태바 간격)
-    if (state.game === 'othello') {
+    if (isAlk()) {
+      // 알까기는 "판에 남은 돌"이 곧 점수다
+      right.textContent = '흑 ' + AK.count(state.board, BLACK) + ' : ' +
+        AK.count(state.board, WHITE) + ' 백' + NB + NB + NB + NB + '100%';
+    } else if (state.game === 'othello') {
       var c = state.othelloCounts || { black: 0, white: 0 };
       right.textContent = '흑: ' + c.black + NB + NB + '백: ' + c.white +
         NB + NB + NB + NB + '100%';
@@ -1010,6 +1140,13 @@
       var pv = state.poker.view;
       nb.textContent = 'B2';
       fx.textContent = pv ? '=POT(' + pv.pot + ')' : '';
+      return;
+    }
+    // 알까기: 마지막 치기를 =FLICK("흑돌") 로 노출한다 (좌표가 없는 종목)
+    if (isAlk()) {
+      var lf = state.moves.length ? state.moves[state.moves.length - 1] : null;
+      nb.textContent = lf ? lf.cell : 'A1';
+      fx.textContent = lf ? '=FLICK("' + colorName(lf.color) + '")' : '';
       return;
     }
     var last = lastRealMove();
@@ -1058,6 +1195,29 @@
       return;
     }
     empty.style.display = 'none';
+
+    // 알까기: 좌표 대신 "무엇이 몇 개 나갔는가"를 적는다
+    if (isAlk()) {
+      state.moves.forEach(function (mv, i) {
+        var row = document.createElement('div');
+        row.className = 'move-row' + (i === state.moves.length - 1 ? ' latest' : '');
+        var num = document.createElement('span');
+        num.className = 'move-num';
+        num.textContent = circled(i + 1);
+        var icon = document.createElement('span');
+        icon.className = 'stone-icon small ' + colorStr(mv.color);
+        var name = document.createElement('span');
+        name.textContent = colorName(mv.color);
+        var note = document.createElement('span');
+        note.className = 'log-text alk-note';
+        note.textContent = alkMoveText(mv);
+        row.appendChild(num); row.appendChild(icon); row.appendChild(name); row.appendChild(note);
+        list.appendChild(row);
+      });
+      list.scrollTop = list.scrollHeight;
+      return;
+    }
+
     var seq = 0;
     state.moves.forEach(function (mv, i) {
       var row = document.createElement('div');
@@ -1330,6 +1490,312 @@
     updateSidebar();
     renderMoveList();
   }
+
+  // ============================================================
+  // 알까기 (Alkkagi)
+  // ------------------------------------------------------------
+  // 한 수 = "돌 하나를 어느 방향으로 얼마나 세게 튕기는가" 하나뿐이다.
+  //  · 로컬  — 클라이언트가 직접 시뮬레이션을 돌리고 그 결과가 곧 판이다.
+  //  · 온라인 — 벡터만 서버로 보낸다. 서버가 파워를 자르고 권위 있는 최종
+  //    상태를 만들어 방송하면, 두 클라이언트가 같은 벡터를 로컬에서 다시
+  //    굴려 애니메이션을 그리고(결정적이므로 화면이 같다) 끝나면 서버가
+  //    보낸 final 로 스냅한다. 어떤 이유로도 두 화면이 갈리지 않는다.
+  // ============================================================
+  var ALK_PULL_MAX = 300;     // 이만큼(물리 단위) 당기면 최대 파워
+  var ALK_MIN_RATIO = 0.06;   // 이보다 짧게 당기고 놓으면 취소로 본다
+  var ALK_AIM_MS = 100;       // 조준 중계 주기 (~10Hz)
+
+  function alkFresh() {
+    state.alk.anim = null;
+    state.alk.aim = null;
+    state.alk.oppAim = null;
+    state.alk.pending = false;
+    alkDrag = null;
+    alkClearAimEl();
+  }
+
+  // 지금 내가 돌을 튕길 수 있는가
+  function alkCanAct() {
+    if (!isAlk()) return false;
+    if (state.alk.anim || state.alk.pending) return false;
+    if (state.gameOver) return false;
+    if (state.online) {
+      if (!state.started) return false;
+      return state.turn === colorNum(state.myColor);
+    }
+    return true;   // 로컬 핫시트: 지금 차례인 쪽이 자기 돌을 튕긴다
+  }
+  function alkMyColor() {
+    return state.online ? colorNum(state.myColor) : state.turn;
+  }
+  // 누른 지점에서 가장 가까운 "내 돌" (조금 넉넉하게 잡는다)
+  function alkPickStone(p) {
+    var stones = (state.board && state.board.stones) || [];
+    var grab = AK.RADIUS * 1.35;
+    var best = null, bestD2 = grab * grab;
+    for (var i = 0; i < stones.length; i++) {
+      var s = stones[i];
+      if (!s.alive || s.owner !== alkMyColor()) continue;
+      var dx = s.x - p.x, dy = s.y - p.y;
+      var d2 = dx * dx + dy * dy;
+      if (d2 <= bestD2) { best = s; bestD2 = d2; }
+    }
+    return best;
+  }
+
+  // 기보 표기용 셀 이름 (엑셀 테마 이름 상자에도 쓴다)
+  function alkCellLabel(snap, id) {
+    var list = (snap && snap.stones) || [];
+    var s = null;
+    for (var i = 0; i < list.length; i++) if (list[i].id === id) s = list[i];
+    if (!s) return 'A1';
+    var c = Math.floor(s.x / AK.BOARD * COLS);
+    var r = Math.floor(s.y / AK.BOARD * ROWS);
+    if (c < 0) c = 0; if (c > COLS - 1) c = COLS - 1;
+    if (r < 0) r = 0; if (r > ROWS - 1) r = ROWS - 1;
+    return String.fromCharCode(65 + c) + (r + 1);
+  }
+
+  // 기보 한 줄: '알까기 — 백돌 1개 아웃' / '알까기 — 아웃 없음'
+  function alkMoveText(mv) {
+    var outs = mv.outs || [];
+    var mine = 0;
+    outs.forEach(function (o) { if (o.owner === mv.color) mine++; });
+    var opp = outs.length - mine;
+    var parts = [];
+    if (opp) parts.push(colorName(otherColor(mv.color)) + ' ' + opp + '개 아웃');
+    if (mine) parts.push('자기 돌 ' + mine + '개 아웃');
+    if (!parts.length) parts.push('아웃 없음');
+    return '알까기 — ' + parts.join(', ');
+  }
+
+  // ── 애니메이션 ────────────────────────────────────────
+  // 시뮬레이션은 120Hz 고정이고 화면은 rAF 주기다. 흐른 시간만큼 틱을 돌린다.
+  function alkAnimate(input, finalSer, onDone) {
+    var sim = AK.begin(state.board, input);
+    state.alk.aim = null;
+    state.alk.oppAim = null;
+    state.alk.anim = { sim: sim, final: finalSer || null, onDone: onDone || null, last: 0, acc: 0 };
+    state.board = sim.state;     // 굴러가는 중간 상태를 그대로 그린다
+    renderAlkkagi();
+    updateSidebar();
+    window.requestAnimationFrame(alkFrame);
+  }
+  function alkFrame(ts) {
+    var a = state.alk.anim;
+    if (!a) return;
+    if (!a.last) a.last = ts;
+    var dt = (ts - a.last) / 1000;
+    a.last = ts;
+    if (!(dt > 0)) dt = 0;
+    if (dt > 0.25) dt = 0.25;    // 탭 전환 등으로 크게 밀리면 잘라낸다
+    a.acc += dt;
+    var steps = 0;
+    while (a.acc >= AK.DT && !a.sim.done && steps < 120) {
+      AK.step(a.sim);
+      a.acc -= AK.DT;
+      steps++;
+    }
+    renderAlkkagi();
+    updateSidebar();
+    if (!a.sim.done) { window.requestAnimationFrame(alkFrame); return; }
+    alkFinishAnim();
+  }
+  // 애니메이션 종료: 권위 있는 최종 상태로 스냅한 뒤 뒷처리를 넘긴다.
+  function alkFinishAnim() {
+    var a = state.alk.anim;
+    if (!a) return;
+    state.alk.anim = null;
+    state.board = a.final ? AK.deserialize(a.final) : a.sim.state;
+    renderAlkkagi();
+    if (a.onDone) a.onDone();
+  }
+
+  // 한 수 확정: 기보 기록 + 승패/차례 반영
+  function alkCommit(color, stoneId, snapshot, events, finalState) {
+    var outs = [];
+    (events || []).forEach(function (e) {
+      if (e && e.t === 'out') outs.push({ id: e.id, owner: e.owner });
+    });
+    state.moves.push({
+      kind: 'flick',
+      color: color,
+      stoneId: stoneId,
+      snapshot: snapshot,      // 무르기용 (치기 직전 상태)
+      outs: outs,
+      cell: alkCellLabel(snapshot, stoneId)
+    });
+    state.alk.pending = false;
+    var w = (finalState && finalState.winner) || null;
+    if (w === BLACK || w === WHITE) {
+      state.gameOver = true;
+      state.winner = w;
+      renderBoard();
+      updateSidebar();
+      renderMoveList();
+      showResultModal(w);
+      return;
+    }
+    state.turn = finalState ? finalState.turn : otherColor(color);
+    renderBoard();
+    updateSidebar();
+    renderMoveList();
+  }
+
+  // ── 치기 (로컬/온라인 공통 입구) ───────────────────────
+  function alkFire(stoneId, vx, vy) {
+    var v = AK.clampVector(vx, vy);
+    var color = alkMyColor();
+    var chk = AK.validateFlick(state.board, color, stoneId, v.vx, v.vy);
+    if (!chk.ok) {
+      if (chk.reason === 'too-weak') toast('조금 더 세게 당겨 주세요');
+      return;
+    }
+    if (state.online) {
+      // 서버가 계산한 결과가 돌아오면 그때 양쪽이 같이 굴린다
+      state.alk.pending = true;
+      wsSend({ type: 'move', kind: 'flick', stoneId: stoneId, vx: v.vx, vy: v.vy });
+      return;
+    }
+    var snap = AK.serialize(state.board);
+    var res = AK.simulate(state.board, { stoneId: stoneId, vx: v.vx, vy: v.vy });
+    var finalSer = AK.serialize(res.finalState);
+    alkAnimate({ stoneId: stoneId, vx: v.vx, vy: v.vy }, finalSer, function () {
+      alkCommit(color, stoneId, snap, res.events, res.finalState);
+    });
+  }
+
+  // 서버 방송 반영 (친 사람 화면도 이 경로로 애니메이션을 시작한다)
+  function applyRemoteFlick(msg) {
+    if (state.alk.anim) alkFinishAnim();   // 혹시 남아 있던 애니메이션 정리
+    var color = colorNum(msg.color);
+    var snap = AK.serialize(state.board);
+    var input = { stoneId: msg.stoneId | 0, vx: Number(msg.vx), vy: Number(msg.vy) };
+    var finalSer = msg.final || null;
+    var events = msg.events || [];
+    alkAnimate(input, finalSer, function () {
+      alkCommit(color, input.stoneId, snap, events,
+        finalSer ? AK.deserialize(finalSer) : null);
+    });
+  }
+
+  // ── 무르기 ────────────────────────────────────────────
+  function localUndoAlk() {
+    if (state.alk.anim) { toast('돌이 아직 구르고 있습니다'); return; }
+    if (!state.moves.length) return;
+    var last = state.moves.pop();
+    state.board = AK.deserialize(last.snapshot);
+    state.turn = last.color;      // 무른 사람 차례로 복귀
+    state.gameOver = false;
+    state.winner = null;
+    state.winStones = [];
+    state.alk.aim = null;
+    state.alk.oppAim = null;
+    state.alk.pending = false;
+    hideModal();
+    renderBoard();
+    updateSidebar();
+    renderMoveList();
+  }
+  // 서버가 수락한 무르기: 전체 상태를 그대로 받는다 (역재생이 불가능한 물리라서)
+  function remoteUndoAlk(msg) {
+    if (state.alk.anim) alkFinishAnim();
+    if (msg.state) state.board = AK.deserialize(msg.state);
+    if (state.moves.length) state.moves.pop();
+    if (msg.turn) state.turn = colorNum(msg.turn);
+    state.gameOver = false;
+    state.winner = null;
+    state.winStones = [];
+    state.alk.aim = null;
+    state.alk.oppAim = null;
+    state.alk.pending = false;
+    hideModal();
+    renderBoard();
+    updateSidebar();
+    renderMoveList();
+  }
+
+  // ── 조준 드래그 (마우스/터치 공용 — Pointer Events) ─────
+  // 새총처럼 "당긴 반대 방향"으로 날아간다. 당긴 길이가 곧 파워다.
+  var alkDrag = null;
+  function alkPointFromEvent(e) {
+    var rect = clickOverlay.getBoundingClientRect();
+    return alkFromPx(e.clientX - rect.left, e.clientY - rect.top);
+  }
+  function alkSendAim() {
+    if (!state.online || !state.started || !alkDrag) return;
+    var a = state.alk.aim;
+    if (!a) return;
+    var now = Date.now();
+    if (alkDrag.aimAt && now - alkDrag.aimAt < ALK_AIM_MS) return;
+    if (alkDrag.aimVx === a.vx && alkDrag.aimVy === a.vy) return;   // 변한 게 없으면 안 보낸다
+    alkDrag.aimAt = now;
+    alkDrag.aimVx = a.vx;
+    alkDrag.aimVy = a.vy;
+    wsSend({ type: 'aim', stoneId: a.stoneId, dx: a.vx, dy: a.vy });
+  }
+  function alkEndDrag(fire) {
+    if (!alkDrag) return;
+    var d = alkDrag;
+    alkDrag = null;
+    state.alk.aim = null;
+    renderAlkAim();
+    if (state.online && state.started) wsSend({ type: 'aim', clear: true });
+    if (!fire) return;
+    var mag = AK.power(d.vx, d.vy);
+    if (mag < AK.MAX_POWER * ALK_MIN_RATIO || mag < AK.MIN_POWER) return;  // 취소
+    alkFire(d.id, d.vx, d.vy);
+  }
+
+  clickOverlay.addEventListener('pointerdown', function (e) {
+    if (!isAlk()) return;
+    if (!alkCanAct()) {
+      if (state.online && state.started && !state.gameOver &&
+          state.turn !== colorNum(state.myColor)) toast('상대 차례입니다');
+      return;
+    }
+    var s = alkPickStone(alkPointFromEvent(e));
+    if (!s) return;
+    var p = alkPointFromEvent(e);
+    alkDrag = { id: s.id, ox: p.x, oy: p.y, vx: 0, vy: 0, aimAt: 0, pid: e.pointerId };
+    state.alk.aim = null;
+    try { clickOverlay.setPointerCapture(e.pointerId); } catch (err) { /* noop */ }
+    e.preventDefault();
+  });
+
+  clickOverlay.addEventListener('pointermove', function (e) {
+    if (!alkDrag || e.pointerId !== alkDrag.pid) return;
+    var p = alkPointFromEvent(e);
+    var pullX = alkDrag.ox - p.x;      // 당긴 반대 방향으로 날아간다
+    var pullY = alkDrag.oy - p.y;
+    var pull = Math.sqrt(pullX * pullX + pullY * pullY);
+    if (pull < 1e-6) {
+      alkDrag.vx = 0; alkDrag.vy = 0;
+      state.alk.aim = null;
+      renderAlkAim();
+      return;
+    }
+    var ratio = Math.min(1, pull / ALK_PULL_MAX);
+    var k = AK.MAX_POWER * ratio / pull;
+    alkDrag.vx = pullX * k;
+    alkDrag.vy = pullY * k;
+    state.alk.aim = { stoneId: alkDrag.id, vx: alkDrag.vx, vy: alkDrag.vy };
+    renderAlkAim();
+    alkSendAim();
+    e.preventDefault();
+  });
+
+  clickOverlay.addEventListener('pointerup', function (e) {
+    if (!alkDrag || e.pointerId !== alkDrag.pid) return;
+    alkEndDrag(true);
+    e.preventDefault();
+  });
+  clickOverlay.addEventListener('pointercancel', function () { alkEndDrag(false); });
+  // Escape 로 조준 취소 (결과 모달 닫기와 겹치지 않는다 — 드래그 중일 때만)
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape' && e.key !== 'Esc') return;
+    if (alkDrag) alkEndDrag(false);
+  });
 
   // ============================================================
   // 카드 게임 (포커 2~6인 / 인디언포커 2~6인)
@@ -1987,6 +2453,7 @@
 
   clickOverlay.addEventListener('click', function (e) {
     if (isCardGame()) return;    // 카드 게임에는 보드 착수가 없다
+    if (isAlk()) return;         // 알까기는 클릭이 아니라 드래그(조준)로 둔다
     var cell = overlayToCell(e);
     if (!cell) return;
     if (state.online) {
@@ -2101,6 +2568,7 @@
     state.winStones = [];
     state.lastFlipped = [];
     state.times = { 1: 0, 2: 0 };
+    alkFresh();
     hideModal();
     // 카드 게임은 보드가 아니라 "매치"를 새로 시작한다 (칩 1000 리셋).
     if (isCardGame()) {
@@ -2130,6 +2598,7 @@
 
   function localUndo() {
     if (state.game === 'othello') { localUndoOthello(); return; }
+    if (isAlk()) { localUndoAlk(); return; }
     if (!state.moves.length) return;
     var last = state.moves.pop();
     state.board[last.row][last.col] = EMPTY;
@@ -2267,6 +2736,7 @@
     var card = isCardGame();
     document.body.classList.toggle('game-othello', state.game === 'othello');
     document.body.classList.toggle('game-connect4', state.game === 'connect4');
+    document.body.classList.toggle('game-alkkagi', isAlk());
     document.body.classList.toggle('game-poker', state.game === 'poker');
     document.body.classList.toggle('game-indian', isIndian());
     document.body.classList.toggle('game-table', card);
@@ -2324,6 +2794,7 @@
     state.game = game;
     localStorage.setItem('omok_game', game);
     pokerFresh();               // 이전 카드 상태(칩/로그/뷰)를 완전히 버린다
+    alkFresh();                 // 조준선/애니메이션도 남기지 않는다
     applyGameLayout();
     // resetGameState 안에서 카드 게임이면 첫 판까지 시작한다
     // (온라인은 서버가 pokerState 로 내려준다)
@@ -2536,7 +3007,9 @@
         break;
 
       case 'move':
-        if (msg.game === 'othello' || (!msg.game && state.game === 'othello')) {
+        if (msg.game === 'alkkagi' || (!msg.game && isAlk())) {
+          applyRemoteFlick(msg);
+        } else if (msg.game === 'othello' || (!msg.game && state.game === 'othello')) {
           applyRemoteMoveOthello(msg);
         } else if (msg.game === 'connect4' || (!msg.game && state.game === 'connect4')) {
           applyRemoteMoveConnect4(msg);
@@ -2546,11 +3019,28 @@
         break;
 
       case 'invalid':
+        // 알까기: 서버가 거절하면 입력 잠금을 반드시 풀어 준다
+        state.alk.pending = false;
         if (msg.reason === 'poker') toast(msg.message || '지금 할 수 없는 액션입니다');
         else if (msg.reason === 'forbidden' && msg.ftype) toast(R.FORBIDDEN_LABEL[msg.ftype] || '금수입니다');
         else if (msg.reason === 'illegal') toast('둘 수 없는 자리입니다');
         else if (msg.reason === 'column-full') toast('그 열은 가득 찼습니다');
         else if (msg.reason === 'finished') toast('끝난 대국입니다. 무르기나 새 게임을 이용하세요');
+        else if (msg.reason === 'not-your-stone') toast('자기 돌만 칠 수 있습니다');
+        else if (msg.reason === 'dead-stone') toast('이미 판 밖으로 나간 돌입니다');
+        else if (msg.reason === 'too-weak') toast('조금 더 세게 당겨 주세요');
+        else if (msg.reason === 'not-your-turn') toast('상대 차례입니다');
+        break;
+
+      // 알까기: 상대가 지금 조준 중인 방향 (표시 전용)
+      case 'aim':
+        if (!isAlk()) break;
+        state.alk.oppAim = msg.clear ? null : {
+          stoneId: msg.stoneId | 0,
+          vx: Number(msg.dx) || 0,
+          vy: Number(msg.dy) || 0
+        };
+        renderAlkAim();
         break;
 
       case 'chat':
@@ -2569,7 +3059,9 @@
         break;
 
       case 'undo':
-        if (msg.game === 'othello' || state.game === 'othello') {
+        if (msg.game === 'alkkagi' || isAlk()) {
+          remoteUndoAlk(msg);
+        } else if (msg.game === 'othello' || state.game === 'othello') {
           remoteUndoOthello(msg);
         } else {
           remoteUndo(msg);
@@ -2677,6 +3169,7 @@
     state.winStones = [];
     state.lastFlipped = [];
     state.times = { 1: 0, 2: 0 };
+    alkFresh();
     hideModal();
     // 카드 게임은 서버가 곧바로 pokerState 를 내려주므로 화면만 비워 둔다
     if (isCardGame()) pokerFresh();

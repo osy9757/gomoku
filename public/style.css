@@ -627,6 +627,88 @@ body.theme-excel.game-connect4 {
   --board-max: min(760px, max(280px, calc((100vh - 200px) * 1.147)));
 }
 
+/* ============================================================
+   알까기(Alkkagi) — 기본 테마 (오목과 같은 나무판 + 격자 장식)
+   ------------------------------------------------------------
+   돌은 격자 교차점이 아니라 물리 좌표(0..1000)를 픽셀로 환산한 자리에
+   절대배치된다. 판 크기가 바뀌면 배율만 달라진다.
+   ============================================================ */
+.stone.alk {
+  z-index: 3;
+  /* 매 프레임 left/top 이 바뀐다 — 전환(transition)을 절대 걸지 않는다.
+     걸면 시뮬레이션 위치와 화면 위치가 어긋난다. */
+  transition: none;
+}
+/* 판 밖으로 나간 돌: 잠깐 튕겨 나가듯 사라진다 */
+.stone.alk-out {
+  animation: alk-out 0.3s ease-out forwards;
+  pointer-events: none;
+  z-index: 2;
+}
+@keyframes alk-out {
+  0% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+  60% { transform: translate(-50%, -50%) scale(1.35); opacity: 0.7; }
+  100% { transform: translate(-50%, -50%) scale(1.6); opacity: 0; }
+}
+
+/* 조준선 (새총). 돌 중심에서 날아갈 방향으로 뻗는다 — 길이 = 파워 */
+.alk-aim {
+  position: absolute;
+  height: 5px;
+  border-radius: 3px;
+  transform-origin: 0 50%;
+  background: linear-gradient(90deg, rgba(226, 51, 51, 0.15), rgba(226, 51, 51, 0.9));
+  z-index: 6;
+  pointer-events: none;
+}
+.alk-aim::after {                 /* 화살촉 */
+  content: '';
+  position: absolute;
+  right: -2px;
+  top: 50%;
+  width: 0; height: 0;
+  transform: translate(0, -50%);
+  border-left: 12px solid rgba(226, 51, 51, 0.9);
+  border-top: 8px solid transparent;
+  border-bottom: 8px solid transparent;
+}
+.alk-aim[data-power="low"] {
+  background: linear-gradient(90deg, rgba(90, 150, 90, 0.15), rgba(70, 150, 80, 0.9));
+}
+.alk-aim[data-power="low"]::after { border-left-color: rgba(70, 150, 80, 0.9); }
+.alk-aim[data-power="mid"] {
+  background: linear-gradient(90deg, rgba(225, 160, 40, 0.15), rgba(225, 150, 30, 0.9));
+}
+.alk-aim[data-power="mid"]::after { border-left-color: rgba(225, 150, 30, 0.9); }
+/* 상대의 조준(중계 표시)은 점선처럼 옅게 */
+.alk-aim.opp { opacity: 0.6; }
+
+/* 드래그로 조준하므로 터치 스크롤 제스처를 막는다 */
+body.game-alkkagi .click-overlay {
+  cursor: grab;
+  touch-action: none;
+}
+body.game-alkkagi .click-overlay:active { cursor: grabbing; }
+
+/* 알까기 엑셀 테마: 납작한 원 + 얇은 회색 조준선 */
+body.theme-excel .stone.alk { box-shadow: none; }
+body.theme-excel .alk-aim {
+  height: 2px;
+  border-radius: 0;
+  background: #444;
+}
+body.theme-excel .alk-aim::after {
+  border-left: 8px solid #444;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+}
+body.theme-excel .alk-aim[data-power="low"],
+body.theme-excel .alk-aim[data-power="mid"] { background: #444; }
+body.theme-excel .alk-aim[data-power="low"]::after,
+body.theme-excel .alk-aim[data-power="mid"]::after { border-left-color: #444; }
+/* 기보 한 줄이 좌표 대신 문장이라 왼쪽 정렬로 흐르게 둔다 */
+.move-row .alk-note { text-align: left; font-weight: 400; }
+
 /* 게임 바꾸기: 종목 선택 + 요청 버튼 (온라인 방 안에서만 표시) */
 .game-change-row {
   display: flex;
@@ -1868,7 +1950,7 @@ body.theme-excel .toast::before {
 @media (prefers-reduced-motion: reduce) {
   .board { transition: none; }
   .stone, .stone.enter, .disc.enter, .disc.flip,
-  .c4-disc.enter, .c4-disc.enter.win { animation: none; }
+  .c4-disc.enter, .c4-disc.enter.win, .stone.alk-out { animation: none; }
   .pcard { transition: none; }
   .pcard.selectable:hover, .pcard.mine-hidden.selectable:hover { transform: none; }
 }

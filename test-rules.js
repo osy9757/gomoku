@@ -1414,5 +1414,280 @@ function cardVals(v) {
     '쇼다운: P1(5) vs P2(5) → 팟 분배 (P1, P2)');
 })();
 
+// ============================================================
+// 알까기(Alkkagi) 물리 엔진 검증
+// 좌표계: 0..1000 x 0..1000 (정규화). 화면 픽셀은 여기서 배율만 곱한다.
+// 핵심 계약은 "결정성" — 같은 상태 + 같은 입력이면 브라우저에서도 Node
+// 에서도 비트 단위로 같은 결과가 나와야 온라인 대전이 성립한다.
+// (서버가 권위 최종 상태를 계산하고, 양쪽 클라이언트는 같은 입력을 로컬에서
+//  다시 굴려 애니메이션만 그린다.)
+// ============================================================
+const Alk = require('./public/alkkagi.js');
+const AB = Alk.BLACK, AW = Alk.WHITE;
+
+// 임의 배치 상태 만들기. list = [[owner, x, y], ...]
+function alkState(list, turn) {
+  const stones = list.map(function (s, i) {
+    return { id: i, owner: s[0], x: s[1], y: s[2], vx: 0, vy: 0, alive: true };
+  });
+  return Alk.deserialize({
+    stones: stones,
+    turn: turn || AB,
+    winner: null,
+    over: false
+  });
+}
+function alkAlive(st, owner) {
+  return st.stones.filter(function (s) { return s.alive && s.owner === owner; }).length;
+}
+function alkStone(st, id) {
+  return st.stones.filter(function (s) { return s.id === id; })[0];
+}
+// 결정성 비교용 지문 (좌표까지 그대로 문자열화)
+function alkPrint(st) { return JSON.stringify(Alk.serialize(st)); }
+
+// (k-a) 초기 배치: 흑 5 (아래) / 백 5 (위), 흑 선공, 겹치지 않는다
+(function () {
+  const g = Alk.createGame();
+  const black = g.stones.filter(function (s) { return s.owner === AB; });
+  const white = g.stones.filter(function (s) { return s.owner === AW; });
+  let apart = true;
+  for (let i = 0; i < g.stones.length; i++) {
+    for (let j = i + 1; j < g.stones.length; j++) {
+      const a = g.stones[i], b = g.stones[j];
+      const d = Math.sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y));
+      if (d < 2 * Alk.RADIUS) apart = false;
+    }
+  }
+  const inBoard = g.stones.every(function (s) {
+    return s.x > 0 && s.x < Alk.BOARD && s.y > 0 && s.y < Alk.BOARD;
+  });
+  // 흑은 아래(y 큰 쪽), 백은 위(y 작은 쪽)
+  const sides = black.every(function (s) { return s.y > Alk.BOARD / 2; }) &&
+    white.every(function (s) { return s.y < Alk.BOARD / 2; });
+  assert('(k-a) 초기 배치 5:5 · 겹침 없음 · 판 안 · 흑 선공',
+    black.length === 5 && white.length === 5 && apart && inBoard && sides &&
+    g.turn === AB && g.winner === null && g.over === false);
+})();
+
+// (k-b) 좌우 대칭 배치 (같은 x 열에 흑/백이 마주 본다)
+(function () {
+  const g = Alk.createGame();
+  const bx = g.stones.filter(function (s) { return s.owner === AB; }).map(function (s) { return s.x; });
+  const wx = g.stones.filter(function (s) { return s.owner === AW; }).map(function (s) { return s.x; });
+  const mirrored = bx.every(function (x, i) {
+    return x === wx[i] && Math.abs((Alk.BOARD - x) - bx[bx.length - 1 - i]) < 1e-9;
+  });
+  assert('(k-b) 초기 배치 좌우 대칭 + 흑백 마주봄', mirrored);
+})();
+
+// (k-c) 결정성: 같은 상태 + 같은 입력을 두 번 굴리면 결과가 완전히 같다
+(function () {
+  const g = Alk.createGame();
+  const input = { stoneId: 2, vx: 137.25, vy: -911.5 };
+  const r1 = Alk.simulate(g, input);
+  const r2 = Alk.simulate(g, input);
+  assert('(k-c1) 같은 입력 → 최종 상태 완전 일치',
+    alkPrint(r1.finalState) === alkPrint(r2.finalState));
+  assert('(k-c2) 같은 입력 → 이벤트/틱 수 일치',
+    JSON.stringify(r1.events) === JSON.stringify(r2.events) && r1.ticks === r2.ticks);
+  assert('(k-c3) simulate 는 원본 상태를 건드리지 않는다',
+    alkPrint(g) === alkPrint(Alk.createGame()));
+})();
+
+// (k-d) 단계 실행기(step)의 최종 결과 == simulate 의 최종 결과
+(function () {
+  const g = Alk.createGame();
+  const input = { stoneId: 0, vx: 240, vy: -1000 };
+  const one = Alk.simulate(g, input);
+  const sim = Alk.begin(g, input);
+  let guard = 0, last = null;
+  while (!sim.done && guard++ < Alk.MAX_TICKS + 5) last = Alk.step(sim);
+  assert('(k-d1) step 반복 결과 == simulate 결과',
+    alkPrint(sim.state) === alkPrint(one.finalState) && sim.ticks === one.ticks);
+  assert('(k-d2) step 은 done/positions 를 돌려준다',
+    !!last && last.done === true && last.positions.length === g.stones.length);
+})();
+
+// (k-e) 정면 치기: 마주 본 백돌이 밖으로 나가고 친 흑돌은 판에 남는다
+(function () {
+  const g = Alk.createGame();
+  // 가운데 열(x=500)에서 마주 보는 흑/백 돌
+  const bs = g.stones.filter(function (s) { return s.owner === AB && s.x === 500; })[0];
+  const ws = g.stones.filter(function (s) { return s.owner === AW && s.x === 500; })[0];
+  const r = Alk.simulate(g, { stoneId: bs.id, vx: 0, vy: -Alk.MAX_POWER });
+  const hit = alkStone(r.finalState, ws.id);
+  const me = alkStone(r.finalState, bs.id);
+  assert('(k-e1) 정면 최대 파워 → 마주 본 백돌 아웃',
+    hit.alive === false && alkAlive(r.finalState, AW) === 4);
+  assert('(k-e2) 친 흑돌은 판에 남는다 (탄성 0.92 → 대부분 전달)',
+    me.alive === true && alkAlive(r.finalState, AB) === 5);
+  assert('(k-e3) 아웃 이벤트에 주인이 기록된다',
+    r.events.length === 1 && r.events[0].t === 'out' &&
+    r.events[0].id === ws.id && r.events[0].owner === AW && r.events[0].tick > 0);
+})();
+
+// (k-f) 판 밖으로 나간 돌은 즉시 제거된다 (자기 돌도 마찬가지)
+(function () {
+  const st = alkState([[AB, 100, 500], [AW, 900, 500]], AB);
+  const r = Alk.simulate(st, { stoneId: 0, vx: -Alk.MAX_POWER, vy: 0 });
+  assert('(k-f1) 왼쪽 밖으로 나간 자기 돌 제거',
+    alkAlive(r.finalState, AB) === 0 && r.events[0].owner === AB);
+  assert('(k-f2) 아웃된 돌은 alive=false 로 남는다 (인덱스 순서 보존)',
+    r.finalState.stones.length === 2 && r.finalState.stones[0].alive === false);
+})();
+
+// (k-g) 탄성 충돌: 친 돌은 느려지고 맞은 돌이 움직인다 (운동량 전달)
+(function () {
+  const st = alkState([[AB, 400, 500], [AW, 600, 500]], AB);
+  const sim = Alk.begin(st, { stoneId: 0, vx: 800, vy: 0 });
+  let hitVx = 0, myVx = 0, guard = 0;
+  while (!sim.done && guard++ < Alk.MAX_TICKS + 5) {
+    Alk.step(sim);
+    if (sim.state.stones[1].vx > 0) {          // 충돌이 일어난 직후
+      hitVx = sim.state.stones[1].vx;
+      myVx = sim.state.stones[0].vx;
+      break;
+    }
+  }
+  assert('(k-g1) 맞은 돌이 진행 방향으로 튄다', hitVx > 0);
+  assert('(k-g2) 친 돌이 크게 느려진다 (전달률 > 70%)',
+    myVx >= 0 && myVx < hitVx * 0.2 && hitVx > 400);
+  const r = Alk.simulate(st, { stoneId: 0, vx: 800, vy: 0 });
+  const a = alkStone(r.finalState, 0), b = alkStone(r.finalState, 1);
+  assert('(k-g3) 최종적으로 맞은 돌이 더 멀리 간다',
+    b.x > 600 && a.x > 400 && a.x < b.x - 2 * Alk.RADIUS + 1e-9);
+})();
+
+// (k-h) 파워 클램프: 클라이언트가 보낸 값이 아무리 커도 MAX_POWER 로 잘린다
+(function () {
+  const c = Alk.clampVector(1e9, 0);
+  const mag = Math.sqrt(c.vx * c.vx + c.vy * c.vy);
+  assert('(k-h1) 과대 입력 클램프', Math.abs(mag - Alk.MAX_POWER) < 1e-9 && c.vy === 0);
+  const small = Alk.clampVector(3, -4);
+  assert('(k-h2) 작은 입력은 그대로', small.vx === 3 && small.vy === -4);
+  const st = alkState([[AB, 500, 900], [AW, 500, 100]], AB);
+  const huge = Alk.simulate(st, { stoneId: 0, vx: 0, vy: -999999 });
+  const capped = Alk.simulate(st, { stoneId: 0, vx: 0, vy: -Alk.MAX_POWER });
+  assert('(k-h3) 클램프는 시뮬레이션 안에서 강제된다 (서버=클라 동일)',
+    alkPrint(huge.finalState) === alkPrint(capped.finalState));
+})();
+
+// (k-i) 승패: 상대 돌이 0이 되면 친 쪽 승리
+(function () {
+  const st = alkState([[AB, 500, 200], [AW, 500, 100]], AB);
+  const r = Alk.simulate(st, { stoneId: 0, vx: 0, vy: -Alk.MAX_POWER });
+  assert('(k-i1) 상대 돌 전멸 → 친 쪽(흑) 승리',
+    alkAlive(r.finalState, AW) === 0 && r.finalState.winner === AB &&
+    r.finalState.over === true);
+})();
+
+// (k-j) 승패: 자기 돌만 전멸하면 상대 승리
+(function () {
+  const st = alkState([[AB, 100, 500], [AW, 900, 500]], AB);
+  const r = Alk.simulate(st, { stoneId: 0, vx: -Alk.MAX_POWER, vy: 0 });
+  assert('(k-j1) 자기 돌만 전멸 → 상대(백) 승리',
+    alkAlive(r.finalState, AB) === 0 && r.finalState.winner === AW &&
+    r.finalState.over === true);
+})();
+
+// (k-k) 승패: 한 번의 치기로 양쪽이 동시에 0이면 "친 쪽이 진다"
+(function () {
+  const st = alkState([[AB, 500, 150], [AW, 540, 100]], AB);
+  const r = Alk.simulate(st, { stoneId: 0, vx: 0, vy: -Alk.MAX_POWER });
+  assert('(k-k1) 동시 전멸 → 친 쪽(흑)의 상대인 백 승리',
+    alkAlive(r.finalState, AB) === 0 && alkAlive(r.finalState, AW) === 0 &&
+    r.finalState.winner === AW && r.finalState.over === true);
+})();
+
+// (k-l) 차례는 결과와 무관하게 매번 교대한다
+(function () {
+  const g = Alk.createGame();
+  const r1 = Alk.simulate(g, { stoneId: 0, vx: 0, vy: -600 });
+  assert('(k-l1) 흑이 치면 다음은 백', r1.finalState.turn === AW);
+  const wid = r1.finalState.stones.filter(function (s) { return s.owner === AW; })[0].id;
+  const r2 = Alk.simulate(r1.finalState, { stoneId: wid, vx: 0, vy: 300 });
+  assert('(k-l2) 백이 치면 다시 흑', r2.finalState.turn === AB);
+})();
+
+// (k-m) 입력 검증 (서버 권위 판정과 동일한 함수를 클라도 쓴다)
+(function () {
+  const g = Alk.createGame();
+  const bs = g.stones.filter(function (s) { return s.owner === AB; })[0];
+  const ws = g.stones.filter(function (s) { return s.owner === AW; })[0];
+  assert('(k-m1) 내 돌 · 내 차례 → 통과',
+    Alk.validateFlick(g, AB, bs.id, 0, -500).ok === true);
+  assert('(k-m2) 상대 차례 거부',
+    Alk.validateFlick(g, AW, ws.id, 0, 500).reason === 'not-your-turn');
+  assert('(k-m3) 남의 돌 거부',
+    Alk.validateFlick(g, AB, ws.id, 0, -500).reason === 'not-your-stone');
+  assert('(k-m4) 없는 돌 거부',
+    Alk.validateFlick(g, AB, 999, 0, -500).reason === 'no-stone');
+  assert('(k-m5) 이상한 벡터 거부',
+    Alk.validateFlick(g, AB, bs.id, NaN, 0).reason === 'bad-vector' &&
+    Alk.validateFlick(g, AB, bs.id, 0, Infinity).reason === 'bad-vector');
+  assert('(k-m6) 힘이 0에 가까우면 거부',
+    Alk.validateFlick(g, AB, bs.id, 1, 1).reason === 'too-weak');
+  // 아웃된 돌 (판이 끝나지 않도록 흑 돌을 하나 더 남겨 둔다)
+  const out = Alk.simulate(alkState([[AB, 100, 500], [AB, 500, 700], [AW, 900, 500]], AB),
+    { stoneId: 0, vx: -Alk.MAX_POWER, vy: 0 }).finalState;
+  out.turn = AB;
+  assert('(k-m7) 이미 아웃된 돌 거부',
+    Alk.validateFlick(out, AB, 0, 0, -500).reason === 'dead-stone');
+  const done = Alk.simulate(alkState([[AB, 500, 200], [AW, 500, 100]], AB),
+    { stoneId: 0, vx: 0, vy: -Alk.MAX_POWER }).finalState;
+  assert('(k-m8) 끝난 판 거부', Alk.validateFlick(done, AW, 1, 0, 100).reason === 'finished');
+})();
+
+// (k-n) 시간 상한: 8초(=960틱)를 넘겨 돌지 않는다
+(function () {
+  assert('(k-n1) 상한 상수 = 8초 · 120Hz', Alk.DT === 1 / 120 && Alk.MAX_TICKS === 960);
+  const g = Alk.createGame();
+  const r = Alk.simulate(g, { stoneId: 0, vx: Alk.MAX_POWER, vy: 0 });
+  assert('(k-n2) 최대 파워도 상한 안에서 멈춘다', r.ticks > 0 && r.ticks < Alk.MAX_TICKS);
+  // 상한에 걸리는 경우: 시뮬레이터 객체의 상한을 낮춰 강제 종료를 확인한다
+  const sim = Alk.begin(g, { stoneId: 0, vx: Alk.MAX_POWER, vy: 0 });
+  sim.maxTicks = 5;
+  let guard = 0;
+  while (!sim.done && guard++ < 50) Alk.step(sim);
+  assert('(k-n3) 상한에 걸리면 강제 종료 + 차례 정리',
+    sim.done === true && sim.ticks === 5 && sim.state.turn === AW);
+  assert('(k-n4) 강제 종료 시점의 속도가 상태에 보존된다 (다음 판 재현용)',
+    sim.state.stones[0].vx > 0 &&
+    Alk.deserialize(Alk.serialize(sim.state)).stones[0].vx === sim.state.stones[0].vx);
+})();
+
+// (k-o) 직렬화 / 복제 왕복
+(function () {
+  const g = Alk.createGame();
+  const r = Alk.simulate(g, { stoneId: 1, vx: 300, vy: -700 });
+  const s = Alk.serialize(r.finalState);
+  const back = Alk.deserialize(s);
+  assert('(k-o1) serialize → deserialize 왕복 동일', alkPrint(back) === alkPrint(r.finalState));
+  assert('(k-o2) serialize 결과는 순수 JSON 값',
+    JSON.parse(JSON.stringify(s)).stones.length === s.stones.length);
+  const c = Alk.clone(r.finalState);
+  c.stones[0].x = -1;
+  assert('(k-o3) clone 은 깊은 복사 (원본 불변)',
+    r.finalState.stones[0].x !== -1 && alkPrint(Alk.clone(r.finalState)) === alkPrint(r.finalState));
+  // 직렬화 왕복 후에도 시뮬레이션 결과가 같아야 온라인에서 갈리지 않는다
+  const a1 = Alk.simulate(r.finalState, { stoneId: 6, vx: 0, vy: 500 });
+  const a2 = Alk.simulate(back, { stoneId: 6, vx: 0, vy: 500 });
+  assert('(k-o4) 왕복 상태로 굴려도 결과 동일',
+    alkPrint(a1.finalState) === alkPrint(a2.finalState));
+})();
+
+// (k-p) 돌 개수 세기 (사이드바 '흑 4 : 5 백' 표시에 쓰인다)
+(function () {
+  const g = Alk.createGame();
+  assert('(k-p1) 초기 개수 5:5', Alk.count(g, AB) === 5 && Alk.count(g, AW) === 5);
+  const r = Alk.simulate(g, {
+    stoneId: g.stones.filter(function (s) { return s.owner === AB && s.x === 500; })[0].id,
+    vx: 0, vy: -Alk.MAX_POWER
+  });
+  assert('(k-p2) 아웃 후 개수 5:4',
+    Alk.count(r.finalState, AB) === 5 && Alk.count(r.finalState, AW) === 4);
+})();
+
 console.log('\n결과: ' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail === 0 ? 0 : 1);

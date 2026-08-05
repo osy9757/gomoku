@@ -1,6 +1,7 @@
 /* 온라인 WebSocket 흐름 검증 */
 const WebSocket = require('ws');
 const Othello = require('./public/othello.js');
+const Alk = require('./public/alkkagi.js');
 const PORT = process.env.PORT || 3457;
 const URL = 'ws://localhost:' + PORT + '/ws';
 
@@ -1726,6 +1727,206 @@ const isDrop = (r, c) => (m) => m.type === 'move' && m.game === 'connect4' && m.
     const first = await until(bm, isMove(7, 7));
     assert('종료후 재대국: 새 판에서 정상 착수',
       first.color === 'black' && first.win === false, { c: first.color, w: first.win });
+    black.close(); white.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 51. 알까기: 방 개설/참가 + 치기 브로드캐스트의 결정성
+  //     서버는 최종 상태(final)를, 클라이언트는 같은 입력을 로컬에서
+  //     다시 굴린 결과를 갖는다. 이 둘이 완전히 같아야 화면이 갈리지 않는다.
+  // ============================================================
+  {
+    const black = await open();
+    const bm = collect(black);
+    send(black, { type: 'create', game: 'alkkagi', color: 'black' });
+    const created = await until(bm, (m) => m.type === 'created');
+    assert('알까기: created 에 종목이 담긴다',
+      created.game === 'alkkagi' && created.color === 'black', { g: created.game });
+    const white = await open();
+    const wm = collect(white);
+    send(white, { type: 'join', code: created.code });
+    const joined = await until(wm, (m) => m.type === 'joined');
+    const st = await until(wm, (m) => m.type === 'start');
+    assert('알까기: 참가 시 종목/색 전달',
+      joined.game === 'alkkagi' && joined.color === 'white' && st.game === 'alkkagi',
+      { g: joined.game, c: joined.color });
+    bm.length = 0; wm.length = 0;
+
+    // 양쪽 클라이언트가 각자 들고 있는 로컬 상태 (실제 클라이언트와 같은 방식)
+    let cliB = Alk.createGame();
+    let cliW = Alk.createGame();
+    const mid = cliB.stones.filter((s) => s.owner === Alk.BLACK && s.x === 500)[0];
+
+    // 가운데 흑돌로 마주 본 백돌을 정면으로 친다 (파워는 일부러 과대 입력)
+    send(black, { type: 'move', kind: 'flick', stoneId: mid.id, vx: 0, vy: -999999 });
+    const fb = await until(bm, (m) => m.type === 'move' && m.kind === 'flick');
+    const fw = await until(wm, (m) => m.type === 'move' && m.kind === 'flick');
+    assert('알까기: 치기 브로드캐스트가 양쪽에 동일하게 간다',
+      JSON.stringify(fb) === JSON.stringify(fw));
+    assert('알까기: 서버가 파워를 MAX_POWER 로 자른다',
+      Math.abs(Math.sqrt(fb.vx * fb.vx + fb.vy * fb.vy) - Alk.MAX_POWER) < 1e-9,
+      { vy: fb.vy });
+    assert('알까기: 브로드캐스트에 최종 상태 + 이벤트가 담긴다',
+      !!fb.final && fb.final.stones.length === 10 &&
+      fb.events.length === 1 && fb.events[0].t === 'out' && fb.events[0].owner === Alk.WHITE,
+      { e: fb.events });
+    assert('알까기: 차례 교대 + 승자 없음',
+      fb.turn === 'white' && fb.winner === null, { t: fb.turn, w: fb.winner });
+
+    // 두 클라이언트가 같은 입력으로 각자 재현 → 서버 final 과 비트 단위로 같아야 한다
+    const inputA = { stoneId: fb.stoneId, vx: fb.vx, vy: fb.vy };
+    cliB = Alk.simulate(cliB, inputA).finalState;
+    cliW = Alk.simulate(cliW, inputA).finalState;
+    assert('알까기: 클라 A 재현 == 서버 최종 상태',
+      JSON.stringify(Alk.serialize(cliB)) === JSON.stringify(fb.final));
+    assert('알까기: 클라 B 재현 == 서버 최종 상태',
+      JSON.stringify(Alk.serialize(cliW)) === JSON.stringify(fb.final));
+    assert('알까기: 백돌 하나가 판 밖으로 나갔다',
+      Alk.count(cliB, Alk.WHITE) === 4 && Alk.count(cliB, Alk.BLACK) === 5);
+
+    // ── 잘못된 치기 거부 ──────────────────────────────
+    bm.length = 0; wm.length = 0;
+    send(black, { type: 'move', kind: 'flick', stoneId: 0, vx: 0, vy: -600 });
+    await wait(120);
+    assert('알까기: 차례가 아니면 무시된다',
+      !bm.some((m) => m.type === 'move') && !wm.some((m) => m.type === 'move'));
+
+    wm.length = 0;
+    send(white, { type: 'move', kind: 'flick', stoneId: 0, vx: 0, vy: 600 });
+    const bad = await until(wm, (m) => m.type === 'invalid');
+    assert('알까기: 남의 돌은 칠 수 없다', bad.reason === 'not-your-stone', { r: bad.reason });
+
+    wm.length = 0;
+    send(white, { type: 'move', kind: 'flick', stoneId: 5, vx: 1, vy: 1 });
+    const weak = await until(wm, (m) => m.type === 'invalid');
+    assert('알까기: 힘이 0에 가까운 치기 거부', weak.reason === 'too-weak', { r: weak.reason });
+
+    wm.length = 0;
+    send(white, { type: 'move', kind: 'flick', stoneId: mid.id + 5, vx: 0, vy: 100 });
+    const dead = await until(wm, (m) => m.type === 'invalid');
+    assert('알까기: 이미 아웃된 돌 거부', dead.reason === 'dead-stone', { r: dead.reason });
+
+    // ── 조준 중계: 상대에게만 간다 ─────────────────────
+    bm.length = 0; wm.length = 0;
+    send(white, { type: 'aim', stoneId: 7, dx: 10, dy: 200 });
+    const aim1 = await until(bm, (m) => m.type === 'aim');
+    assert('알까기: 조준이 상대에게 중계된다',
+      aim1.stoneId === 7 && aim1.dx === 10 && aim1.dy === 200 && aim1.color === 'white',
+      { a: aim1 });
+    assert('알까기: 조준은 보낸 사람에게 되돌아오지 않는다',
+      !wm.some((m) => m.type === 'aim'));
+    bm.length = 0;
+    await wait(40);
+    send(white, { type: 'aim', stoneId: 7, dx: 20, dy: 300 });
+    const aim2 = await until(bm, (m) => m.type === 'aim');
+    assert('알까기: 조준 갱신이 계속 전달된다', aim2.dx === 20 && aim2.dy === 300);
+    bm.length = 0;
+    send(white, { type: 'aim', clear: true });
+    const aimC = await until(bm, (m) => m.type === 'aim');
+    assert('알까기: 조준 지우기는 항상 전달된다(속도 제한 예외)', aimC.clear === true);
+
+    // ── 무르기: 치기 직전 스냅샷 복원 ──────────────────
+    bm.length = 0; wm.length = 0;
+    send(white, { type: 'undoRequest' });
+    await until(bm, (m) => m.type === 'undoRequest');
+    send(black, { type: 'undoResponse', accept: true });
+    const ub = await until(bm, (m) => m.type === 'undo');
+    const uw = await until(wm, (m) => m.type === 'undo');
+    assert('알까기: 무르기가 양쪽에 전체 상태로 온다',
+      ub.game === 'alkkagi' && !!ub.state && JSON.stringify(ub) === JSON.stringify(uw));
+    assert('알까기: 무르기로 치기 이전 배치(5:5)가 복원된다',
+      JSON.stringify(ub.state) === JSON.stringify(Alk.serialize(Alk.createGame())) &&
+      ub.turn === 'black' && ub.over === false,
+      { t: ub.turn });
+
+    // 되돌린 뒤 같은 자리로 다시 칠 수 있다
+    bm.length = 0; wm.length = 0;
+    send(black, { type: 'move', kind: 'flick', stoneId: mid.id, vx: 0, vy: -Alk.MAX_POWER });
+    const again = await until(wm, (m) => m.type === 'move' && m.kind === 'flick');
+    assert('알까기: 무르기 후 재개 — 같은 입력이면 같은 결과',
+      JSON.stringify(again.final) === JSON.stringify(fb.final), { t: again.turn });
+
+    black.close(); white.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 52. 알까기: 승부 → 끝난 방 치기 거부 → 무르기로 부활
+  //     (백이 제 돌을 다섯 번 밖으로 날려 자멸하는 경로)
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await room('alkkagi');
+    let cli = Alk.createGame();
+    const whites = cli.stones.filter((s) => s.owner === Alk.WHITE).map((s) => s.id);
+    let last = null;
+    for (let k = 0; k < whites.length; k++) {
+      // 흑: 아무 일도 일어나지 않는 아주 약한 치기 (차례만 넘긴다)
+      bm.length = 0; wm.length = 0;
+      send(black, { type: 'move', kind: 'flick', stoneId: 0, vx: 40, vy: 0 });
+      await until(wm, (m) => m.type === 'move' && m.kind === 'flick');
+      // 백: 자기 돌을 위쪽 밖으로 날린다 (자멸)
+      bm.length = 0; wm.length = 0;
+      send(white, { type: 'move', kind: 'flick', stoneId: whites[k], vx: 0, vy: -Alk.MAX_POWER });
+      last = await until(bm, (m) => m.type === 'move' && m.kind === 'flick');
+    }
+    assert('알까기: 자기 돌이 전멸하면 상대가 이긴다',
+      last.winner === Alk.BLACK && last.final.over === true &&
+      last.final.stones.filter((s) => s.owner === Alk.WHITE && s.alive).length === 0,
+      { w: last.winner });
+    assert('알까기: 자멸 아웃 이벤트에 주인이 백으로 기록된다',
+      last.events.length === 1 && last.events[0].owner === Alk.WHITE);
+
+    // 끝난 방에는 더 칠 수 없다
+    bm.length = 0; wm.length = 0;
+    send(black, { type: 'move', kind: 'flick', stoneId: 0, vx: 0, vy: -600 });
+    await wait(120);
+    assert('알까기: 끝난 방 치기 거부',
+      bm.some((m) => m.type === 'invalid' && m.reason === 'finished') &&
+      !wm.some((m) => m.type === 'move'));
+
+    // 무르기로 되살아난다
+    bm.length = 0; wm.length = 0;
+    send(black, { type: 'undoRequest' });
+    await until(wm, (m) => m.type === 'undoRequest');
+    send(white, { type: 'undoResponse', accept: true });
+    const rb = await until(bm, (m) => m.type === 'undo');
+    const rw = await until(wm, (m) => m.type === 'undo');
+    assert('알까기: 종료 후 무르기 = 부활 + 백돌 1개 복귀',
+      rb.revived === true && rw.revived === true && rb.turn === 'white' &&
+      rb.state.stones.filter((s) => s.owner === Alk.WHITE && s.alive).length === 1,
+      { r: rb.revived, t: rb.turn });
+
+    // 부활 후 백이 다시 칠 수 있다
+    bm.length = 0; wm.length = 0;
+    send(white, { type: 'move', kind: 'flick', stoneId: whites[4], vx: 0, vy: -Alk.MAX_POWER });
+    const revFlick = await until(bm, (m) => m.type === 'move' && m.kind === 'flick');
+    assert('알까기: 부활 후 재개 — 다시 승부가 난다',
+      revFlick.color === 'white' && revFlick.winner === Alk.BLACK,
+      { c: revFlick.color, w: revFlick.winner });
+
+    black.close(); white.close();
+    await wait(60);
+  }
+
+  // ============================================================
+  // 53. 알까기: 게임 바꾸기 화이트리스트 (2인 방 종목이므로 전환 가능)
+  // ============================================================
+  {
+    const { black, white, bm, wm } = await omokRoom('free');
+    send(black, { type: 'gameChangeRequest', game: 'alkkagi' });
+    const req = await until(wm, (m) => m.type === 'gameChangeRequest');
+    assert('알까기: 게임 바꾸기 요청 전달', req.game === 'alkkagi');
+    send(white, { type: 'gameChangeResponse', accept: true });
+    const ch = await until(bm, (m) => m.type === 'gameChanged');
+    await until(wm, (m) => m.type === 'gameChanged');
+    assert('알까기: 종목 전환 + 흑 선공', ch.game === 'alkkagi' && ch.turn === 'black');
+    // 전환 직후 바로 칠 수 있다 (새 알까기 판이 깔려 있다)
+    bm.length = 0; wm.length = 0;
+    send(black, { type: 'move', kind: 'flick', stoneId: 2, vx: 0, vy: -Alk.MAX_POWER });
+    const f = await until(wm, (m) => m.type === 'move' && m.kind === 'flick');
+    assert('알까기: 전환된 방에서 정상 동작',
+      f.final.stones.length === 10 && f.events.length === 1);
     black.close(); white.close();
     await wait(60);
   }
