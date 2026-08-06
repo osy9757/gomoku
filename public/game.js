@@ -2330,9 +2330,8 @@
       return;
     }
     if (gated) addHint(host, '차례를 넘기는 중...');
-    else if (turn === me) addHint(host, seatName(target) + '의 패에서 한 장을 고르세요');
-    else if (target === me) addHint(host, seatName(turn) + '이(가) 내 패에서 뽑는 중...');
-    else addHint(host, seatName(turn) + '이(가) 뽑는 중...');
+    else if (turn === me) addHint(host, seatName(target) + '의 패에서 카드를 1장 뽑으세요');
+    else addHint(host, seatName(turn) + '이(가) ' + seatName(target) + '의 패에서 뽑는 중...');
 
     var canShuffle = target !== null && !v.shuffled &&
       (state.online ? v.me === target : !gated);
@@ -2403,9 +2402,11 @@
   function makeSeatPod(v, i, isMe, actor) {
     var pod = document.createElement('div');
     var stateLabel = pokerSeatState(v, i);
+    var isDrawTarget = isThief() && v && !v.over && v.target === i;
     pod.className = 'ct-pod' + (isMe ? ' me' : '') +
       (actor === i ? ' turn' : '') + (pokerSeatGone(v, i) ? ' gone' : '') +
-      (isThief() && v && v.over && v.result && v.result.loser === i ? ' thief-loser' : '');
+      (isThief() && v && v.over && v.result && v.result.loser === i ? ' thief-loser' : '') +
+      (isDrawTarget ? ' draw-target' : '');
     pod.setAttribute('data-seat', String(i));
 
     var head = document.createElement('div');
@@ -2425,6 +2426,13 @@
       dl.className = 'ct-pod-tag';
       dl.textContent = '딜러';
       head.appendChild(dl);
+    }
+    // 도둑잡기: 지금 카드를 뽑히는 대상 좌석 — 본인이면 다르게 안내한다
+    if (isDrawTarget) {
+      var db = document.createElement('span');
+      db.className = 'ct-pod-draw-badge';
+      db.textContent = isMe ? '내 패에서 뽑는 중' : '여기서 뽑기';
+      head.appendChild(db);
     }
     if (stateLabel) {
       var st = document.createElement('span');

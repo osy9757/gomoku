@@ -1249,6 +1249,16 @@ body.game-thief .ct-opps .pcard.selectable { cursor: pointer; }
   border-color: #ffb0b0;
   box-shadow: 0 0 0 2px rgba(255, 140, 140, 0.3);
 }
+/* 지금 카드를 뽑히는 대상 좌석 — 누구 패에서 뽑는지 한눈에 보이게 */
+.ct-pod.draw-target {
+  border-color: #b8860b;
+  box-shadow: 0 0 0 2px rgba(184, 134, 11, 0.55), 0 0 10px rgba(255, 196, 60, 0.4);
+}
+.ct-pod-draw-badge {
+  font-size: 10px; font-weight: 700; color: #4a2e00;
+  background: #ffd34d; border-radius: 8px; padding: 1px 6px;
+  margin-left: 4px; white-space: nowrap;
+}
 body.game-thief .ct-opps .pcard { max-width: 34px; }
 body.game-thief .ct-mine .pcard { max-width: 56px; }
 body.game-thief .ct-pod-cards { flex-wrap: wrap; row-gap: 6px; gap: 3px; }
@@ -1278,6 +1288,16 @@ body.theme-excel .ct-pod.thief-loser {
   box-shadow: none;
   outline: 2px solid #a4262c;
   outline-offset: -2px;
+}
+body.theme-excel .ct-pod.draw-target {
+  border-color: #b8860b;
+  box-shadow: none;
+  outline: 2px solid #b8860b;
+  outline-offset: -2px;
+}
+body.theme-excel .ct-pod-draw-badge {
+  background: #fff4d6; color: #9c5700; border: 1px solid #b8860b;
+  border-radius: 0; font-weight: 500;
 }
 
 /* 결과 모달의 카드 자리 (도둑잡기의 조커 한 장) */
