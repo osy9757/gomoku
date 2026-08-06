@@ -2131,7 +2131,7 @@ function tevents(res) { return res.events.map(function (e) { return e.t; }).join
     return Thief.describeEvent(ev, N);
   };
   assert('(t-i3) 배분 / 첫 정리 문구',
-    line('deal') === '9장을 3명에게 모두 나눴습니다 (딜러 플레이어 3)' &&
+    line('deal') === '9장을 3명에게 모두 나눴습니다 · 선: 플레이어 1' &&
     line('clean') === '첫 정리 — 플레이어 1 1쌍 · 플레이어 2 1쌍 · 플레이어 3 1쌍');
   assert('(t-i4) 뽑기 문구에는 카드가 담기지 않는다',
     line('draw', r.events) === '플레이어 1 → 플레이어 2의 카드를 뽑음');

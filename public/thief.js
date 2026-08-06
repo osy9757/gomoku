@@ -235,7 +235,7 @@
       var c = deckOrder[i];
       hands[ord[i % n]].cards.push({ r: c.r, s: c.s });
     }
-    emit(s, {
+    var dealEvent = emit(s, {
       t: 'deal', players: n, dealer: dealer,
       dealt: deckOrder.length, counts: handCounts(s)
     });
@@ -249,6 +249,7 @@
     checkEscapes(s, ord);
 
     s.turn = firstActive(s, dealer);   // 선 = 딜러 왼쪽 (탈출했으면 그 다음)
+    dealEvent.first = s.turn;          // 딜러는 배분 순서 기준일 뿐, 화면에는 "선"을 알려 준다
     s.target = targetOf(s);
     s.shuffled = false;
     checkEnd(s);
@@ -423,8 +424,9 @@
     function nm(i) { return N[i] || ('P' + (i + 1)); }
     switch (ev.t) {
       case 'deal':
-        return ev.dealt + '장을 ' + ev.players + '명에게 모두 나눴습니다 (딜러 ' +
-          nm(ev.dealer) + ')';
+        var first = typeof ev.first === 'number' ? ev.first : (ev.dealer + 1) % ev.players;
+        return ev.dealt + '장을 ' + ev.players + '명에게 모두 나눴습니다 · 선: ' +
+          nm(first);
       case 'clean':
         return '첫 정리 — ' + (ev.counts || []).map(function (c, i) {
           return nm(i) + ' ' + c + '쌍';

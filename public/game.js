@@ -883,7 +883,7 @@
       nm.className = 'seat-name';
       nm.textContent = seatName(i) +
         (state.online && state.poker.hostSeat === i ? ' (방장)' : '') +
-        (v && v.dealer === i ? ' · 딜러' : '');
+        (!isThief() && v && v.dealer === i ? ' · 딜러' : '');
       var sst = document.createElement('span');
       sst.className = 'seat-state';
       sst.textContent = st || (actor === i ? '생각 중...' : '');
@@ -2421,7 +2421,7 @@
       host.textContent = '방장';
       head.appendChild(host);
     }
-    if (v && v.dealer === i) {
+    if (!isThief() && v && v.dealer === i) {
       var dl = document.createElement('span');
       dl.className = 'ct-pod-tag';
       dl.textContent = '딜러';
