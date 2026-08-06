@@ -1198,6 +1198,102 @@ body.theme-excel .pcard.ip.ten {
 }
 body.theme-excel .pcard.ip.back .pc-cell { font-weight: 400; }
 
+/* ============================================================
+   도둑잡기 — 조커 카드 / 뽑기·페어 버리기 연출
+   ------------------------------------------------------------
+   내 패는 앞면(♠7 표기 = 포커와 동일한 .pcard), 남의 패는 뒷면뿐이다.
+   조커만 전용 카드로 그린다 — 손으로 좌표를 잡은 광대 모자 SVG 한 개.
+   ============================================================ */
+.pcard.joker {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4%;
+  color: #7a3ea8;
+  background: linear-gradient(165deg, #fffdf6 0%, #f4ecff 100%);
+  border-color: #a887cf;
+}
+.pcard.joker .pc-joker {
+  display: block;
+  width: 58%;
+  line-height: 0;
+}
+.pcard.joker .pc-joker-art { width: 100%; height: auto; display: block; }
+.pcard.joker .pc-joker-label {
+  font-size: 0.72em;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+/* 방금 뽑아 온 카드: 살짝 뒤집히며 들어온다 */
+@keyframes thief-draw-in {
+  0%   { transform: translateY(-16px) rotateY(90deg); opacity: 0; }
+  60%  { transform: translateY(0) rotateY(-8deg); opacity: 1; }
+  100% { transform: none; opacity: 1; }
+}
+.pcard.just-drawn { animation: thief-draw-in 0.34s ease-out both; }
+/* 짝을 이뤄 버려지는 두 장: 잠깐 남았다가 위로 흩어지며 사라진다 */
+@keyframes thief-pair-out {
+  0%   { transform: none; opacity: 1; }
+  100% { transform: translateY(-26px) scale(0.82) rotate(7deg); opacity: 0; }
+}
+.pcard.pair-out {
+  animation: thief-pair-out 0.44s ease-in both;
+  pointer-events: none;
+}
+/* 뽑을 수 있는 뒷면: 마우스를 올리면 들린다 (.selectable 과 같은 연출) */
+body.game-thief .ct-opps .pcard.selectable { cursor: pointer; }
+/* 도둑으로 확정된 좌석 */
+.ct-pod.thief-loser {
+  border-color: #ffb0b0;
+  box-shadow: 0 0 0 2px rgba(255, 140, 140, 0.3);
+}
+body.game-thief .ct-opps .pcard { max-width: 34px; }
+body.game-thief .ct-mine .pcard { max-width: 56px; }
+body.game-thief .ct-pod-cards { flex-wrap: wrap; row-gap: 6px; gap: 3px; }
+body.game-thief { --board-max: 680px; }
+body.theme-excel.game-thief { --board-max: min(760px, max(280px, calc(100vh - 240px))); }
+body.game-thief .board-flip { display: none; }
+/* 사이드바 아이콘을 카드처럼 (흑/백 돌로 보이지 않게) */
+body.game-thief .stone-icon.black {
+  background: radial-gradient(circle at 35% 30%, #b48ce0 0%, #6a3aa0 72%);
+  box-shadow: inset 0 2px 3px rgba(255, 255, 255, 0.25);
+}
+body.game-thief .stone-icon.white {
+  background: radial-gradient(circle at 35% 30%, #ffd98a 0%, #d99a1f 75%);
+  box-shadow: inset 0 -1px 2px rgba(0, 0, 0, 0.12);
+}
+/* 엑셀 테마: 조커도 그냥 '★JOKER' 셀 하나 */
+body.theme-excel .pcard.joker {
+  background: #fff4d6;
+  border-color: #d4d4d4;
+  color: #9c5700;
+}
+body.theme-excel .pcard.joker .pc-joker,
+body.theme-excel .pcard.joker .pc-joker-label { display: none; }
+body.theme-excel .pcard.joker .pc-cell { font-weight: 700; }
+body.theme-excel .ct-pod.thief-loser {
+  border-color: #a4262c;
+  box-shadow: none;
+  outline: 2px solid #a4262c;
+  outline-offset: -2px;
+}
+
+/* 결과 모달의 카드 자리 (도둑잡기의 조커 한 장) */
+.modal-extra {
+  display: flex;
+  justify-content: center;
+  margin: 2px 0 10px;
+}
+.modal-extra .pcard.modal-card-face {
+  flex: 0 0 auto;
+  width: 62px;
+  max-width: 62px;
+  font-size: 13px;
+}
+body.theme-excel .modal-extra .pcard.modal-card-face { width: 70px; max-width: 70px; }
+
 /* ---------- 기보 ---------- */
 .record-card { display: flex; flex-direction: column; }
 .move-list {

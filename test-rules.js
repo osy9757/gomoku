@@ -1689,5 +1689,465 @@ function alkPrint(st) { return JSON.stringify(Alk.serialize(st)); }
     Alk.count(r.finalState, AB) === 5 && Alk.count(r.finalState, AW) === 4);
 })();
 
+// ============================================================
+// 도둑잡기(2~6인) 엔진 검증 — public/thief.js
+//   덱: 표준 52장 + 조커 1장 = 53장 (조커 = {r:0, s:-1})
+//   전부 나눠 갖고 → 첫 정리(페어 버리기) → 시계방향 다음 사람의 패에서
+//   한 장씩 뽑기 → 손이 비면 탈출 → 마지막에 조커를 든 사람이 도둑
+// ============================================================
+const Thief = require('./public/thief.js');
+
+const TJOKER = { r: 0, s: -1 };
+function tc(r, s) { return { r: r, s: s === undefined ? 0 : s }; }
+// 딜러를 마지막 좌석으로 두면 배분 순서가 좌석 순서(0,1,2..)와 같아진다
+function tdeal(deck, n, dealer) {
+  return Thief.createHand({
+    deckOrder: deck, players: n,
+    dealer: dealer === undefined ? n - 1 : dealer
+  });
+}
+function tstep(st, p, action) {
+  const r = Thief.apply(st, p, action);
+  if (r.error) throw new Error('불법 액션(' + JSON.stringify(action) + '): ' + r.error);
+  return r.state;
+}
+// 손패를 '♠A' 나열로 (조커는 'JOKER')
+function tshow(cards) {
+  return cards.map(function (c) {
+    if (c === null) return '?';
+    return c.r === 0 ? 'JOKER' : Cards.cardText(c);
+  }).join(',');
+}
+function thand(st, p) { return tshow(st.hands[p].cards); }
+function tcounts(st) { return Thief.handCounts(st).join(','); }
+function tevents(res) { return res.events.map(function (e) { return e.t; }).join(','); }
+
+// (t-a) 덱 53장 + 라운드 로빈 배분 총량
+(function () {
+  const d = Thief.makeDeck();
+  const jokers = d.filter(function (c) { return c.r === 0; });
+  const norm = d.filter(function (c) { return c.r !== 0; });
+  const uniq = {};
+  norm.forEach(function (c) { uniq[c.s + '/' + c.r] = true; });
+  assert('(t-a1) 덱 53장 = 표준 52장 + 조커 1장',
+    d.length === 53 && jokers.length === 1 && norm.length === 52 &&
+    Object.keys(uniq).length === 52);
+  assert('(t-a2) 조커는 { r:0, s:-1 } — 어떤 랭크와도 짝이 되지 않는다',
+    jokers[0].r === 0 && jokers[0].s === -1 && Thief.isJoker(jokers[0]) === true &&
+    Thief.isJoker(tc(2, 0)) === false);
+
+  // 배분은 '첫 정리' 전 상태를 deal 이벤트가 그대로 담고 있다
+  for (let n = 2; n <= 6; n++) {
+    const s = Thief.createHand({ players: n, deckOrder: Thief.makeDeck(), dealer: n - 1 });
+    const deal = s.log[0];
+    const total = deal.counts.reduce(function (a, b) { return a + b; }, 0);
+    const max = Math.max.apply(null, deal.counts);
+    const min = Math.min.apply(null, deal.counts);
+    assert('(t-a3/' + n + '인) 53장을 남김없이 나눈다 · 차이는 최대 1장',
+      deal.t === 'deal' && deal.dealt === 53 && total === 53 && max - min <= 1,
+      deal.counts);
+  }
+  const s3 = Thief.createHand({ players: 3, deckOrder: Thief.makeDeck(), dealer: 2 });
+  assert('(t-a4) 3인 배분 = 18,18,17 (딜러 왼쪽부터 시계방향)',
+    s3.log[0].counts.join(',') === '18,18,17');
+  const s3b = Thief.createHand({ players: 3, deckOrder: Thief.makeDeck(), dealer: 0 });
+  assert('(t-a5) 딜러가 0 이면 P1 부터 받는다 → 18,18,17 이 좌석 1,2,0 순',
+    s3b.log[0].counts.join(',') === '17,18,18');
+  assert('(t-a6) 인원 범위 클램프 (2~6)',
+    Thief.createHand({ players: 9 }).players === 6 &&
+    Thief.createHand({ players: 1 }).players === 2);
+})();
+
+// (t-b) 첫 정리 — 페어 전부 버리기 / 트리플은 1장 남기기 / 조커는 그대로
+(function () {
+  // 2인 · 딜러 1 → 배분 순서 P0,P1,P0,P1...
+  //  P0: ♠5 ♥5 ♦5 ♣5 JOKER  (같은 랭크 4장 = 2쌍 전부 버림)
+  //  P1: ♠7 ♥7 ♦7 ♠9        (트리플 = 1쌍만 버리고 1장 남김)
+  const deck = [
+    tc(5, 0), tc(7, 0),
+    tc(5, 1), tc(7, 1),
+    tc(5, 2), tc(7, 2),
+    tc(5, 3), tc(9, 0),
+    TJOKER
+  ];
+  const s = tdeal(deck, 2);
+  const clean = s.log.filter(function (e) { return e.t === 'clean'; })[0];
+  assert('(t-b1) 같은 랭크 4장은 2쌍 모두 버린다',
+    clean.counts[0] === 2 && thand(s, 0) === 'JOKER');
+  assert('(t-b2) 트리플은 1쌍만 버리고 1장을 남긴다 (뒤쪽 것이 남는다)',
+    clean.counts[1] === 1 && thand(s, 1) === '♦7,♠9');
+  assert('(t-b3) 첫 정리 로그에는 랭크가 아니라 쌍 수만 담긴다',
+    clean.counts.join(',') === '2,1' &&
+    JSON.stringify(clean).indexOf('"r"') === -1);
+
+  // 정리 직후 손이 비면 그 자리에서 곧바로 탈출한다
+  //  P0: ♠5 ♥5 JOKER → [JOKER] / P1: ♠6 ♥6 → 빈 손 → 즉시 탈출 → 즉시 종료
+  const deck2 = [tc(5, 0), tc(6, 0), tc(5, 1), tc(6, 1), TJOKER];
+  const s2 = tdeal(deck2, 2);
+  assert('(t-b4) 첫 정리로 손이 비면 즉시 탈출 (탈출 순서에 기록)',
+    s2.escaped[1] === true && s2.escapeOrder.join(',') === '1');
+  assert('(t-b5) 남은 한 명이 조커만 들면 그대로 종료 — 그 사람이 도둑',
+    s2.over === true && s2.result.loser === 0 && thand(s2, 0) === 'JOKER' &&
+    s2.result.joker.r === 0 && s2.result.escapeOrder.join(',') === '1');
+  assert('(t-b6) 판이 끝나면 matchOver 도 함께 켜진다 (한 판 = 한 경기)',
+    s2.matchOver === true && s2.matchWinner === null && s2.phase === 'over' &&
+    s2.turn === null && s2.target === null);
+})();
+
+// (t-c) 차례 / 대상 / 뽑기 — 짝이 맞으면 즉시 버린다
+(function () {
+  // 3인 · 딜러 2 → 배분 순서 P0,P1,P2 반복
+  //  P0: ♠2 ♠4 ♥4 → [♠2]
+  //  P1: ♠3 ♠5 ♥5 → [♠3]
+  //  P2: JOKER ♥2 ♣9 → [JOKER,♥2,♣9]
+  const deck = [
+    tc(2, 0), tc(3, 0), TJOKER,
+    tc(4, 0), tc(5, 0), tc(2, 1),
+    tc(4, 1), tc(5, 1), tc(9, 3)
+  ];
+  let s = tdeal(deck, 3);
+  assert('(t-c1) 첫 정리 결과 / 선은 딜러(2) 왼쪽인 P0',
+    thand(s, 0) === '♠2' && thand(s, 1) === '♠3' && thand(s, 2) === 'JOKER,♥2,♣9' &&
+    s.turn === 0 && s.target === 1 && s.phase === 'draw', {
+      h: [thand(s, 0), thand(s, 1), thand(s, 2)], t: s.turn
+    });
+  assert('(t-c2) 뽑을 대상은 시계방향 "다음" 활성 좌석',
+    Thief.targetOf(s) === 1);
+  assert('(t-c3) 차례가 아닌 좌석의 뽑기는 거부',
+    Thief.apply(s, 1, { type: 'draw', index: 0 }).error === '당신의 차례가 아닙니다');
+  assert('(t-c4) 없는 인덱스는 거부 (음수 / 범위 초과 / 정수 아님)',
+    Thief.apply(s, 0, { type: 'draw', index: -1 }).error === '잘못된 카드 위치' &&
+    Thief.apply(s, 0, { type: 'draw', index: 1 }).error === '잘못된 카드 위치' &&
+    Thief.apply(s, 0, { type: 'draw', index: 0.5 }).error === '잘못된 카드 위치' &&
+    !!Thief.apply(s, 0, { type: 'draw' }).error);
+  assert('(t-c5) 알 수 없는 액션 거부', !!Thief.apply(s, 0, { type: 'nope' }).error);
+
+  // P0 이 P1 의 ♠3 을 뽑는다 → 짝 없음 → 손패 맨 뒤에 붙는다. P1 은 빈 손 → 탈출
+  const r1 = Thief.apply(s, 0, { type: 'draw', index: 0 });
+  s = r1.state;
+  assert('(t-c6) 짝이 없으면 손패 맨 뒤에 붙는다',
+    thand(s, 0) === '♠2,♠3' && r1.events[0].paired === false);
+  assert('(t-c7) 뽑혀서 손이 빈 사람은 탈출',
+    s.escaped[1] === true && s.escapeOrder.join(',') === '1' &&
+    tevents(r1) === 'draw,escape');
+  assert('(t-c8) 차례는 뽑힌 사람에게 — 탈출했으면 그 다음 활성 좌석으로',
+    s.turn === 2 && s.target === 0);
+
+  // P2 가 P0 의 ♠2 를 뽑는다 → P2 의 ♥2 와 짝 → 두 장 모두 버린다
+  const r2 = Thief.apply(s, 2, { type: 'draw', index: 0 });
+  s = r2.state;
+  assert('(t-c9) 뽑은 카드가 짝이면 두 장을 즉시 버린다',
+    thand(s, 2) === 'JOKER,♣9' && tcounts(s) === '1,0,2' &&
+    tevents(r2) === 'draw,pair');
+  assert('(t-c10) 페어 로그에는 랭크가 없다 (쌍 수만)',
+    r2.events[1].t === 'pair' && r2.events[1].pairs === 1 &&
+    r2.events[1].r === undefined && r2.events[1].card === undefined);
+  assert('(t-c11) 탈출한 좌석은 대상에서 건너뛴다',
+    s.turn === 0 && s.target === 2);
+})();
+
+// (t-d) 뽑은 사람 / 뽑힌 사람이 동시에 탈출하며 판이 끝난다
+(function () {
+  //  P0: ♠2 ♠4 ♥4 → [♠2] / P1: ♥2 ♠5 ♥5 → [♥2] / P2: JOKER ♠6 ♥6 → [JOKER]
+  const deck = [
+    tc(2, 0), tc(2, 1), TJOKER,
+    tc(4, 0), tc(5, 0), tc(6, 0),
+    tc(4, 1), tc(5, 1), tc(6, 1)
+  ];
+  let s = tdeal(deck, 3);
+  assert('(t-d1) 각자 1장씩 남은 상태',
+    thand(s, 0) === '♠2' && thand(s, 1) === '♥2' && thand(s, 2) === 'JOKER');
+  const r = Thief.apply(s, 0, { type: 'draw', index: 0 });
+  s = r.state;
+  assert('(t-d2) 뽑아서 짝을 맞춘 사람도 손이 비면 탈출 (뽑은 사람 먼저 기록)',
+    s.escaped[0] === true && s.escaped[1] === true &&
+    s.escapeOrder.join(',') === '0,1' &&
+    tevents(r) === 'draw,pair,escape,escape,end');
+  assert('(t-d3) 조커만 남은 사람이 도둑',
+    s.over === true && s.result.loser === 2 && thand(s, 2) === 'JOKER' &&
+    s.result.escapeOrder.join(',') === '0,1');
+  assert('(t-d4) 끝난 판에는 더 이상 액션할 수 없다',
+    Thief.apply(s, 2, { type: 'draw', index: 0 }).error === '이미 끝난 판입니다');
+
+  // 조커를 P0 이 들고 있어도 판정은 동일하다 (누가 들었든 그 사람이 도둑)
+  const deck2 = [
+    TJOKER, tc(2, 1), tc(2, 0),
+    tc(4, 0), tc(5, 0), tc(6, 0),
+    tc(4, 1), tc(5, 1), tc(6, 1)
+  ];
+  let t = tdeal(deck2, 3);
+  assert('(t-d5) 조커 보유자만 바꾼 배치', thand(t, 0) === 'JOKER' &&
+    thand(t, 1) === '♥2' && thand(t, 2) === '♠2' && t.turn === 0);
+  t = tstep(t, 0, { type: 'draw', index: 0 });     // P0 이 ♥2 를 뽑는다 (짝 없음)
+  assert('(t-d6) P1 탈출 → 차례는 다음 활성 좌석(P2)',
+    t.escapeOrder.join(',') === '1' && t.turn === 2 && t.target === 0 &&
+    thand(t, 0) === 'JOKER,♥2');
+  t = tstep(t, 2, { type: 'draw', index: 1 });     // ♥2 를 뽑아 ♠2 와 짝
+  assert('(t-d7) 도둑은 조커를 든 P0 (승자 개념은 없다)',
+    t.over === true && t.result.loser === 0 && thand(t, 0) === 'JOKER' &&
+    t.escapeOrder.join(',') === '1,2' && t.matchWinner === null);
+})();
+
+// (t-e) 미끼 섞기 — 대상만 · 차례당 1회 · 순열 그대로 적용
+(function () {
+  // 2인 · 딜러 1 → P0: ♠2 ♠4 ♠6 JOKER / P1: ♠3 ♠5 ♠7
+  const deck = [
+    tc(2, 0), tc(3, 0), tc(4, 0), tc(5, 0),
+    tc(6, 0), tc(7, 0), TJOKER
+  ];
+  let s = tdeal(deck, 2);
+  assert('(t-e1) 섞기 전 손패 (진짜 순서)',
+    thand(s, 0) === '♠2,♠4,♠6,JOKER' && thand(s, 1) === '♠3,♠5,♠7' &&
+    s.turn === 0 && s.target === 1 && s.shuffled === false);
+  assert('(t-e2) 대상이 아닌 좌석은 섞을 수 없다',
+    Thief.apply(s, 0, { type: 'shuffle', perm: [0, 1, 2, 3] }).error ===
+    '지금 패를 섞을 수 있는 좌석이 아닙니다');
+  assert('(t-e3) 잘못된 순열은 거부 (길이 / 중복 / 범위)',
+    Thief.apply(s, 1, { type: 'shuffle', perm: [0, 1] }).error === '잘못된 섞기 순서' &&
+    Thief.apply(s, 1, { type: 'shuffle', perm: [0, 0, 1] }).error === '잘못된 섞기 순서' &&
+    Thief.apply(s, 1, { type: 'shuffle', perm: [0, 1, 3] }).error === '잘못된 섞기 순서' &&
+    Thief.apply(s, 1, { type: 'shuffle', perm: 'abc' }).error === '잘못된 섞기 순서');
+
+  const rs = Thief.apply(s, 1, { type: 'shuffle', perm: [2, 0, 1] });
+  s = rs.state;
+  assert('(t-e4) 순열 [2,0,1] 이 그대로 적용된다',
+    thand(s, 1) === '♠7,♠3,♠5' && s.shuffled === true);
+  assert('(t-e5) 섞기 로그에는 카드 정보가 전혀 없다',
+    tevents(rs) === 'shuffle' && rs.events[0].p === 1 &&
+    JSON.stringify(rs.events[0]) === '{"t":"shuffle","p":1}');
+  assert('(t-e6) 같은 차례에 두 번은 섞을 수 없다',
+    Thief.apply(s, 1, { type: 'shuffle', perm: [1, 2, 0] }).error ===
+    '이번 차례에는 이미 섞었습니다');
+  assert('(t-e7) 섞은 뒤 뽑으면 새 순서대로 뽑힌다 (index 0 = ♠7)',
+    thand(tstep(s, 0, { type: 'draw', index: 0 }), 0) === '♠2,♠4,♠6,JOKER,♠7');
+
+  s = tstep(s, 0, { type: 'draw', index: 0 });
+  assert('(t-e8) 차례가 넘어가면 섞기 제한이 풀린다',
+    s.turn === 1 && s.target === 0 && s.shuffled === false);
+  s = tstep(s, 0, { type: 'shuffle', perm: [4, 3, 2, 1, 0] });
+  assert('(t-e9) 새 차례의 대상(P0)이 다시 한 번 섞을 수 있다',
+    thand(s, 0) === '♠7,JOKER,♠6,♠4,♠2' && s.shuffled === true);
+})();
+
+// (t-f) viewFor 마스킹 — 남의 손패는 장수만 / 조커는 절대 새지 않는다
+(function () {
+  const deck = [
+    tc(2, 0), tc(3, 0), TJOKER,
+    tc(4, 0), tc(5, 0), tc(2, 1),
+    tc(4, 1), tc(5, 1), tc(9, 3)
+  ];
+  const s = tdeal(deck, 3);
+  const v0 = Thief.viewFor(s, 0);
+  const v2 = Thief.viewFor(s, 2);
+  assert('(t-f1) 내 손패는 그대로 보인다',
+    tshow(v0.hands[0].cards) === '♠2' && tshow(v2.hands[2].cards) === 'JOKER,♥2,♣9');
+  assert('(t-f2) 남의 손패는 전부 null (장수만 보인다)',
+    v0.hands[1].cards.join(',') === '' && v0.hands[1].cards.length === 1 &&
+    v0.hands[1].cards.every(function (c) { return c === null; }) &&
+    v0.hands[2].cards.length === 3 &&
+    v0.hands[2].cards.every(function (c) { return c === null; }));
+  assert('(t-f3) counts 로 각자 남은 장수를 알 수 있다',
+    v0.counts.join(',') === '1,1,3' && v0.inPlay === 5);
+  assert('(t-f4) 조커는 남의 뷰에 절대 실리지 않는다',
+    JSON.stringify(v0.hands).indexOf('"r":0') === -1 &&
+    JSON.stringify(Thief.viewFor(s, 1).hands).indexOf('"r":0') === -1);
+  assert('(t-f5) 덱은 뷰에 담기지 않는다',
+    v0.deck === undefined && v0.deckLeft === 0 && v0.me === 0 && v2.me === 2);
+  assert('(t-f6) 차례/대상/섞기 가능 여부는 공개 정보',
+    v0.turn === 0 && v0.target === 1 && v0.canDraw === true && v0.canShuffle === false &&
+    Thief.viewFor(s, 1).canDraw === false && Thief.viewFor(s, 1).canShuffle === true);
+  const vn = Thief.viewFor(s, null);
+  assert('(t-f7) viewFor(null) 은 전원 손패를 가린다 (핫시트 가리개)',
+    vn.me === null && vn.canDraw === false && vn.canShuffle === false &&
+    vn.hands.every(function (h) { return h.cards.every(function (c) { return c === null; }); }) &&
+    JSON.stringify(vn.hands).indexOf('"r"') === -1);
+  assert('(t-f8) viewFor 는 원본을 건드리지 않는다',
+    thand(s, 2) === 'JOKER,♥2,♣9' && s.deck.length === 9);
+  assert('(t-f9) 판 종료 전 로그에는 어떤 카드 값도 없다',
+    s.log.every(function (e) {
+      return e.card === undefined && e.cards === undefined && e.r === undefined;
+    }));
+
+  // 판이 끝나면 전원 공개 (남은 것은 도둑의 조커뿐이다)
+  const over = tdeal([tc(5, 0), tc(6, 0), tc(5, 1), tc(6, 1), TJOKER], 2);
+  assert('(t-f10) 판이 끝나면 도둑의 조커가 모두에게 공개된다',
+    over.over === true &&
+    tshow(Thief.viewFor(over, 1).hands[0].cards) === 'JOKER' &&
+    tshow(Thief.viewFor(over, null).hands[0].cards) === 'JOKER');
+})();
+
+// (t-g) 퇴장 — 카드는 판에서 빠지고, 조커만은 다음 활성 좌석으로 넘어간다
+(function () {
+  const deck = [
+    tc(2, 0), tc(3, 0), TJOKER,
+    tc(4, 0), tc(5, 0), tc(2, 1),
+    tc(4, 1), tc(5, 1), tc(9, 3)
+  ];
+  // (1) 조커를 든 P2 가 나간다 → 조커는 다음 활성 좌석 P0 의 손패 맨 뒤로
+  const s = tdeal(deck, 3);
+  const before = s.hands[0].cards.length;
+  const r = Thief.leave(s, 2);
+  assert('(t-g1) 퇴장 좌석의 카드는 판에서 사라진다',
+    r.state.left[2] === true && r.state.hands[2].cards.length === 0 &&
+    Thief.isActive(r.state, 2) === false);
+  assert('(t-g2) 조커는 사라지지 않고 다음 활성 좌석 맨 뒤(index = 기존 길이)로',
+    thand(r.state, 0) === '♠2,JOKER' &&
+    Thief.isJoker(r.state.hands[0].cards[before]) === true);
+  assert('(t-g3) 조커가 옮겨간 사실은 로그에 남지 않는다 (누가 들었는지 새면 안 된다)',
+    tevents(r) === 'leave' && JSON.stringify(r.events) === '[{"t":"leave","p":2}]');
+  assert('(t-g4) 남은 두 명으로 판은 계속된다',
+    r.state.over === false && r.state.turn === 0 && r.state.target === 1);
+  assert('(t-g5) 퇴장은 탈출이 아니다 (탈출 순서에 들어가지 않는다)',
+    r.state.escapeOrder.join(',') === '' && r.state.escaped[2] === false);
+  assert('(t-g6) 같은 좌석의 중복 퇴장은 무시된다',
+    Thief.leave(r.state, 2).events.length === 0 &&
+    !!Thief.leave(s, 9).error && !!Thief.leave(null, 0).error);
+
+  // (2) 조커를 안 든 P1 이 나간다 → 그냥 빠지고 대상만 다시 계산된다
+  const r2 = Thief.leave(s, 1);
+  assert('(t-g7) 조커가 없으면 그냥 빠진다 (카드만 사라짐)',
+    r2.state.hands[1].cards.length === 0 && thand(r2.state, 0) === '♠2' &&
+    thand(r2.state, 2) === 'JOKER,♥2,♣9' &&
+    r2.state.turn === 0 && r2.state.target === 2);
+
+  // (3) 차례인 사람이 나가면 차례가 다음 활성 좌석으로 넘어간다
+  const r3 = Thief.leave(s, 0);
+  assert('(t-g8) 차례 좌석이 나가면 차례는 다음 활성 좌석으로',
+    r3.state.turn === 1 && r3.state.target === 2 && r3.state.over === false);
+
+  // (4) 퇴장으로 한 명만 남으면 그 사람이 도둑이 된다
+  const r4 = Thief.leave(Thief.leave(s, 1).state, 2);
+  assert('(t-g9) 퇴장으로 한 명만 남으면 즉시 종료 — 조커를 넘겨받은 사람이 도둑',
+    r4.state.over === true && r4.state.result.loser === 0 &&
+    thand(r4.state, 0).indexOf('JOKER') !== -1);
+  assert('(t-g10) 끝난 판에서의 퇴장은 상태를 흔들지 않는다',
+    Thief.leave(r4.state, 0).state.result.loser === 0);
+})();
+
+// (t-h) 결정성 — 같은 덱이면 언제나 같은 상태 / 같은 진행
+(function () {
+  // 테스트 전용 LCG (Math.random 을 쓰면 결정성 검증 자체가 성립하지 않는다)
+  function lcg(seed) {
+    let x = seed;
+    return function () { x = (x * 1103515245 + 12345) % 2147483648; return x / 2147483648; };
+  }
+  const deck = Cards.shuffle(Thief.makeDeck(), lcg(12345));
+  const a = Thief.createHand({ deckOrder: deck, players: 4, dealer: 3 });
+  const b = Thief.createHand({ deckOrder: deck, players: 4, dealer: 3 });
+  assert('(t-h1) 같은 덱 → 완전히 동일한 초기 상태',
+    JSON.stringify(a) === JSON.stringify(b));
+  assert('(t-h2) createHand 는 넘겨받은 덱 배열을 건드리지 않는다',
+    deck.length === 53 && a.deck !== deck);
+
+  // 고정 시드로 뽑을 위치를 정해 끝까지 진행 → 두 번 돌려도 결과가 같다.
+  // (항상 index 0 만 뽑으면 카드가 자리만 돌면서 순환할 수 있다 — 실제 게임이
+  //  끝나는 이유는 뽑는 위치가 매번 달라지기 때문이다)
+  function playOut(st, seed) {
+    const rnd = lcg(seed || 777);
+    let guard = 0;
+    while (!st.over && guard++ < 5000) {
+      const len = st.hands[st.target].cards.length;
+      const idx = Math.min(len - 1, Math.floor(rnd() * len));
+      const res = Thief.apply(st, st.turn, { type: 'draw', index: idx });
+      if (res.error) throw new Error(res.error);
+      st = res.state;
+    }
+    return st;
+  }
+  const e1 = playOut(a);
+  const e2 = playOut(b);
+  assert('(t-h3) 같은 입력 → 같은 최종 상태 (도둑/탈출 순서까지)',
+    JSON.stringify(e1) === JSON.stringify(e2));
+  assert('(t-h4) 판은 반드시 끝나고, 도둑의 손에는 조커 한 장만 남는다',
+    e1.over === true && e1.result.loser !== null &&
+    thand(e1, e1.result.loser) === 'JOKER' &&
+    e1.escapeOrder.length === 3 &&
+    e1.escapeOrder.indexOf(e1.result.loser) === -1);
+  assert('(t-h5) 탈출 순서에는 중복이 없다',
+    new Set(e1.escapeOrder).size === e1.escapeOrder.length);
+
+  // 2~6인 어느 인원에서도 도둑 한 명만 남고 끝난다
+  for (let n = 2; n <= 6; n++) {
+    const d = Cards.shuffle(Thief.makeDeck(), lcg(9000 + n));
+    const fin = playOut(Thief.createHand({ deckOrder: d, players: n, dealer: n - 1 }), 31 + n);
+    assert('(t-h6/' + n + '인) 도둑 한 명 + 나머지 전원 탈출로 끝난다',
+      fin.over === true && fin.escapeOrder.length === n - 1 &&
+      fin.result.loser !== null && thand(fin, fin.result.loser) === 'JOKER' &&
+      Thief.handCounts(fin).reduce(function (a, b) { return a + b; }, 0) === 1,
+      { n: n, loser: fin.result && fin.result.loser, c: Thief.handCounts(fin) });
+  }
+
+  // 섞기를 끼워 넣어도 (순열이 같으면) 결과가 같다
+  function playWithShuffle(st) {
+    const rnd = lcg(4242);
+    let guard = 0;
+    while (!st.over && guard++ < 5000) {
+      const t = st.target;
+      const len = st.hands[t].cards.length;
+      if (len > 1) {
+        const perm = [];
+        for (let i = len - 1; i >= 0; i--) perm.push(i);   // 뒤집기
+        st = Thief.apply(st, t, { type: 'shuffle', perm: perm }).state;
+      }
+      const idx = Math.min(len - 1, Math.floor(rnd() * len));
+      st = Thief.apply(st, st.turn, { type: 'draw', index: idx }).state;
+    }
+    return st;
+  }
+  const w1 = playWithShuffle(Thief.createHand({ deckOrder: deck, players: 4, dealer: 3 }));
+  const w2 = playWithShuffle(Thief.createHand({ deckOrder: deck, players: 4, dealer: 3 }));
+  assert('(t-h7) 섞기를 끼워도 같은 순열이면 같은 결과',
+    JSON.stringify(w1) === JSON.stringify(w2) && w1.over === true &&
+    thand(w1, w1.result.loser) === 'JOKER');
+})();
+
+// (t-i) nextHand / 로그 문구
+(function () {
+  const over = tdeal([tc(5, 0), tc(6, 0), tc(5, 1), tc(6, 1), TJOKER], 2);
+  assert('(t-i1) 진행 중에는 nextHand 불가',
+    !!Thief.nextHand(tdeal([tc(2, 0), tc(3, 0), TJOKER], 3)).error);
+  // 섞지 않은 덱을 그대로 쓰면 첫 정리만으로 판이 끝나 버릴 수 있으므로
+  // (2인 · 무늬 정렬 덱이 정확히 그런 경우다) 섞은 덱으로 확인한다.
+  let sx = 777;
+  const shuffled = Cards.shuffle(Thief.makeDeck(), function () {
+    sx = (sx * 1103515245 + 12345) % 2147483648; return sx / 2147483648;
+  });
+  const nx = Thief.nextHand(over, shuffled);
+  assert('(t-i2) 새 판은 딜러가 한 칸 넘어가고 판 번호가 늘어난다',
+    nx.dealer === (over.dealer + 1) % 2 && nx.gameNo === over.gameNo + 1 &&
+    nx.over === false && nx.escapeOrder.length === 0 && nx.log[0].t === 'deal' &&
+    nx.log[0].dealt === 53, { d: nx.dealer, g: nx.gameNo, o: nx.over });
+
+  const N = ['플레이어 1', '플레이어 2', '플레이어 3'];
+  const deck = [
+    tc(2, 0), tc(2, 1), TJOKER,
+    tc(4, 0), tc(5, 0), tc(6, 0),
+    tc(4, 1), tc(5, 1), tc(6, 1)
+  ];
+  const s = tdeal(deck, 3);
+  const r = Thief.apply(s, 0, { type: 'draw', index: 0 });
+  const line = function (t, src) {
+    const ev = (src || s.log).filter(function (e) { return e.t === t; })[0];
+    return Thief.describeEvent(ev, N);
+  };
+  assert('(t-i3) 배분 / 첫 정리 문구',
+    line('deal') === '9장을 3명에게 모두 나눴습니다 (딜러 플레이어 3)' &&
+    line('clean') === '첫 정리 — 플레이어 1 1쌍 · 플레이어 2 1쌍 · 플레이어 3 1쌍');
+  assert('(t-i4) 뽑기 문구에는 카드가 담기지 않는다',
+    line('draw', r.events) === '플레이어 1 → 플레이어 2의 카드를 뽑음');
+  assert('(t-i5) 페어 문구는 랭크 없이 쌍 수만',
+    line('pair', r.events) === '플레이어 1 페어 1쌍 버림');
+  assert('(t-i6) 탈출 / 종료 문구',
+    line('escape', r.events) === '플레이어 1 탈출!' &&
+    line('end', r.events) === '도둑: 플레이어 3');
+  const sh = Thief.apply(s, 1, { type: 'shuffle', perm: [0] });
+  assert('(t-i7) 섞기 문구',
+    Thief.describeEvent(sh.events[0], N) === '플레이어 2이(가) 패를 섞었습니다');
+  assert('(t-i8) 퇴장 문구 / 이름을 안 주면 P1..PN',
+    Thief.describeEvent({ t: 'leave', p: 2 }, N) === '플레이어 3 퇴장' &&
+    Thief.describeEvent({ t: 'escape', p: 0 }) === 'P1 탈출!' &&
+    Thief.describeEvent(null) === '' && Thief.describeEvent({ t: 'zzz' }) === '');
+})();
+
 console.log('\n결과: ' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail === 0 ? 0 : 1);

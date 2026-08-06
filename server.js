@@ -18,13 +18,14 @@ const Alkkagi = require('./public/alkkagi.js');
 const Cards = require('./public/cards.js');
 const Poker = require('./public/sevenpoker.js');
 const Indian = require('./public/indianpoker.js');
+const Thief = require('./public/thief.js');
 
 // 지원 종목 (게임 생성/변경에서 공용으로 쓰는 화이트리스트)
-const GAMES = ['omok', 'othello', 'connect4', 'alkkagi', 'poker', 'indian'];
+const GAMES = ['omok', 'othello', 'connect4', 'alkkagi', 'poker', 'indian', 'thief'];
 // 테이블 방(2~6인 좌석제) 종목 = 카드 엔진을 쓰는 종목.
 // 포커는 2명이 앉으면 그대로 헤즈업(1:1)이 된다 — 예전의 별도 종목이었던
 // '맞포커'는 포커 2인으로 흡수됐다.
-const TABLE_GAMES = ['poker', 'indian'];
+const TABLE_GAMES = ['poker', 'indian', 'thief'];
 // '게임 바꾸기'로 전환할 수 있는 종목
 // (2인 방 전용 — 테이블 방 종목은 좌석/칩 구조가 달라 제외한다)
 const CHANGEABLE_GAMES = GAMES.filter((g) => TABLE_GAMES.indexOf(g) === -1);
@@ -39,10 +40,12 @@ function isTableGame(g) {
 function isTableRoom(room) {
   return !!room && isTableGame(room.game);
 }
-// 종목별 카드 엔진. 인디언포커와 세븐포커는 공개 API 모양이 같아서
-// 테이블 방 코드 경로 전체를 엔진만 바꿔 끼워 그대로 쓴다.
+// 종목별 카드 엔진. 세 엔진 모두 공개 API 모양(createHand/apply/leave/viewFor/
+// nextHand/isHandOver)이 같아서 테이블 방 코드 경로 전체를 엔진만 바꿔 끼워 쓴다.
 function cardEngine(game) {
-  return game === 'indian' ? Indian : Poker;
+  if (game === 'indian') return Indian;
+  if (game === 'thief') return Thief;
+  return Poker;
 }
 function roomEngine(room) {
   return cardEngine(room && room.game);
@@ -74,10 +77,26 @@ function seatOf(room, ws) {
 function secureRandom() {
   return crypto.randomInt(0, 0x40000000) / 0x40000000;
 }
-// 종목별 덱. 인디언포커는 1~10 두 벌(20장), 나머지는 표준 52장.
+// 종목별 덱. 인디언포커는 1~10 두 벌(20장), 도둑잡기는 52장 + 조커(53장),
+// 나머지는 표준 52장.
 function shuffledDeck(game) {
-  const base = game === 'indian' ? Indian.makeDeck() : Cards.makeDeck();
+  let base;
+  if (game === 'indian') base = Indian.makeDeck();
+  else if (game === 'thief') base = Thief.makeDeck();
+  else base = Cards.makeDeck();
   return Cards.shuffle(base, secureRandom);
+}
+// 도둑잡기 '패 섞기': 순열은 서버가 자기 난수로 만든다 (엔진은 결정적이라
+// 순열을 직접 받는다). Fisher-Yates 로 0..len-1 의 순열 하나를 돌려준다.
+function randomPermutation(len) {
+  const a = [];
+  for (let i = 0; i < len; i++) a.push(i);
+  for (let i = len - 1; i > 0; i--) {
+    let j = Math.floor(secureRandom() * (i + 1));
+    if (j > i) j = i;
+    const t = a[i]; a[i] = a[j]; a[j] = t;
+  }
+  return a;
 }
 // 상태가 바뀔 때마다 각 플레이어에게 "그 사람 시점" 만 보낸다.
 // events 는 전원에게 동일하게 가는 공개 로그(히든 카드 정보가 없다).
@@ -115,6 +134,12 @@ function tableChips(room, seat) {
   if (room.poker && typeof room.poker.chips[seat] === 'number') return room.poker.chips[seat];
   return roomEngine(room).START_CHIPS;
 }
+// 도둑잡기에는 칩이 없다. 대신 좌석 목록에 "남은 손패 수"를 보낸다.
+// (다른 종목에서는 null 이라 화면이 예전 그대로 칩만 그린다)
+function tableCards(room, seat) {
+  if (room.game !== 'thief' || !room.poker || !room.poker.hands[seat]) return null;
+  return room.poker.hands[seat].cards.length;
+}
 // 로비 상태 방송. 입장/퇴장/시작/매치 종료 등 모든 변화에서 호출한다.
 function sendTableLobby(room, notice) {
   const started = !!room.started;
@@ -125,7 +150,8 @@ function sendTableLobby(room, notice) {
       seat: p.seat,
       name: seatLabel(p.seat),
       isHost: p.seat === room.hostSeat,
-      chips: tableChips(room, p.seat)
+      chips: tableChips(room, p.seat),
+      cards: tableCards(room, p.seat)
     }));
   const matchOver = !!(room.poker && room.poker.matchOver);
   broadcast(room, {
@@ -401,8 +427,16 @@ wss.on('connection', (ws) => {
         const E = roomEngine(room);
         const seat = seatOf(room, ws);
         if (seat === null) return;
-        const action = msg.action || {};
+        let action = msg.action || {};
         if (!room.poker) return;
+
+        // 도둑잡기 '패 섞기': 클라이언트는 버튼만 누르고, 실제 섞는 순서는
+        // 서버가 자기 난수로 만든다. 클라이언트가 순열을 보내오더라도 쓰지 않는다
+        // (자기 패를 원하는 자리에 배치할 수 있으면 미끼 섞기가 무의미해진다).
+        if (room.game === 'thief' && action.type === 'shuffle') {
+          const hand = room.poker.hands[seat];
+          action = { type: 'shuffle', perm: randomPermutation(hand ? hand.cards.length : 0) };
+        }
 
         // '다음 판' 은 양쪽 누구나 보낼 수 있고, 이미 다음 판이 시작됐으면
         // 아무 일도 하지 않는다(멱등).

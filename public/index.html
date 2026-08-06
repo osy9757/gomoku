@@ -70,6 +70,7 @@
               <label class="rule-opt"><input type="radio" name="game" value="alkkagi" /> 알까기</label>
               <label class="rule-opt"><input type="radio" name="game" value="poker" /> 포커</label>
               <label class="rule-opt"><input type="radio" name="game" value="indian" /> 인디언포커</label>
+              <label class="rule-opt"><input type="radio" name="game" value="thief" /> 도둑잡기</label>
             </div>
           </div>
 
@@ -276,6 +277,8 @@
   <div class="modal-backdrop" id="resultModal" data-kind="board" hidden>
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
       <span class="modal-stone" id="modalStone"></span>
+      <!-- 카드 한 장을 보여 줘야 하는 결과에 쓰는 자리 (도둑잡기의 조커) -->
+      <div class="modal-extra" id="modalExtra" hidden></div>
       <h2 class="modal-title" id="modalTitle">흑돌 승리!</h2>
       <p class="modal-message" id="modalMessage"></p>
       <div class="modal-actions" id="modalActions">
@@ -305,6 +308,7 @@
   <script src="cards.js"></script>
   <script src="sevenpoker.js"></script>
   <script src="indianpoker.js"></script>
+  <script src="thief.js"></script>
   <script src="game.js"></script>
 </body>
 </html>

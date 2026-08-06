@@ -12,6 +12,7 @@
   var K = window.Cards;         // 카드 공용 유틸 (덱/표기/족보)
   var P = window.SevenPoker;    // 세븐포커 엔진 (로컬 핫시트에서 직접 구동)
   var IP = window.IndianPoker;  // 인디언포커 엔진 (공개 API 모양이 P 와 같다)
+  var TH = window.Thief;        // 도둑잡기 엔진 (공개 API 모양이 P 와 같다)
   var BLACK = R.BLACK, WHITE = R.WHITE, EMPTY = R.EMPTY; // 세 게임 공통 (1,2,0)
   // 보드는 더 이상 정사각이 아니다 (사목 6행 x 7열).
   // 행/열을 따로 들고 다닌다. 오목/오델로는 ROWS === COLS.
@@ -21,10 +22,10 @@
   var OTHELLO_DOTS = [[2, 2], [2, 6], [6, 2], [6, 6]];
 
   // 지원 종목 (순서 = 선택 UI 표시 순서)
-  var GAMES = ['omok', 'othello', 'connect4', 'alkkagi', 'poker', 'indian'];
+  var GAMES = ['omok', 'othello', 'connect4', 'alkkagi', 'poker', 'indian', 'thief'];
   var GAME_LABEL = {
     omok: '오목', othello: '오델로', connect4: '사목', alkkagi: '알까기',
-    poker: '포커', indian: '인디언포커'
+    poker: '포커', indian: '인디언포커', thief: '도둑잡기'
   };
   // 예전 버전에서 저장된 종목 이름 → 지금 이름.
   // '맞포커'(1:1 세븐포커)는 포커 2인으로 흡수됐다. 옛 설정이 남아 있어도
@@ -36,14 +37,20 @@
   // 카드 게임: 보드 대신 카드 테이블(#cardTable)을 쓰는 종목.
   // 이 종목들은 모두 좌석이 2~6인인 테이블 종목이기도 하다(온라인은 좌석제 방).
   // 두 목록이 갈라지지 않도록 같은 배열을 공유한다 — 2인 포커가 곧 헤즈업이다.
-  var CARD_GAMES = ['poker', 'indian'];
+  var CARD_GAMES = ['poker', 'indian', 'thief'];
   var TABLE_GAMES = CARD_GAMES;
   function isCardGame(g) { return CARD_GAMES.indexOf(g || state.game) !== -1; }
   function isTableGame(g) { return TABLE_GAMES.indexOf(g || state.game) !== -1; }
   // 인디언포커: 마스킹이 정반대라 카드 렌더링/문구가 따로 필요하다
   function isIndian(g) { return (g || state.game) === 'indian'; }
-  // 현재 종목의 카드 엔진 (인디언포커 ↔ 세븐포커)
-  function cardEngine(g) { return isIndian(g) ? IP : P; }
+  // 도둑잡기: 칩/베팅이 없고 "남의 패에서 한 장 뽑기"가 전부인 종목
+  function isThief(g) { return (g || state.game) === 'thief'; }
+  // 현재 종목의 카드 엔진 (세븐포커 / 인디언포커 / 도둑잡기)
+  function cardEngine(g) {
+    if (isIndian(g)) return IP;
+    if (isThief(g)) return TH;
+    return P;
+  }
   function PE() { return cardEngine(); }
   // '게임 바꾸기'로 고를 수 있는 종목 (테이블 방 종목은 2인 방에서 못 바꾼다)
   var CHANGEABLE_GAMES = GAMES.filter(function (g) {
@@ -165,7 +172,10 @@
       hostSeat: 0,     // 온라인: 방장 좌석
       isHost: false,   // 온라인: 내가 방장인가
       canStart: false, // 온라인: 지금 시작할 수 있는가
-      tableStarted: false  // 온라인: 매치가 시작됐는가
+      tableStarted: false, // 온라인: 매치가 시작됐는가
+      // 도둑잡기 전용: 내 손패의 변화(뽑기/짝 버리기) 연출용 추적
+      thief: { prev: [], seat: -1, ready: false, added: null, out: [], timer: null },
+      reveal: null    // 로컬 핫시트: 뽑은 결과를 본인에게 보여 주는 중인 좌석
     },
     // online
     ws: null,
@@ -839,6 +849,10 @@
   // 판/매치 결과 한 줄 요약 (포커 전용 — 좌석이 여럿이라 문구가 다르다)
   function pokerResultShort(v) {
     if (!v || !v.over || !v.result) return null;
+    // 도둑잡기는 승자가 아니라 "도둑"을 가린다
+    if (isThief()) {
+      return v.result.loser === null ? '판 종료' : ('도둑 ' + seatName(v.result.loser));
+    }
     if (v.matchOver) {
       return (v.matchWinner === null ? '' : seatName(v.matchWinner) + ' ') + '최종 우승';
     }
@@ -860,7 +874,8 @@
     for (var i = 0; i < n; i++) {
       var st = pokerSeatState(v, i);
       var row = document.createElement('div');
-      row.className = 'seat-row' + (actor === i ? ' active' : '') + (st ? ' gone' : '');
+      row.className = 'seat-row' + (actor === i ? ' active' : '') +
+        (pokerSeatGone(v, i) ? ' gone' : '');
       row.setAttribute('data-seat', String(i));
       var icon = document.createElement('span');
       icon.className = 'stone-icon small ' + (i % 2 ? 'white' : 'black');
@@ -874,7 +889,9 @@
       sst.textContent = st || (actor === i ? '생각 중...' : '');
       var chips = document.createElement('span');
       chips.className = 'seat-chips';
-      setChips(chips, v ? v.chips[i] : seatLobbyChips(i));
+      // 도둑잡기는 칩이 없다 → 남은 손패 수를 보여 준다
+      if (isThief()) chips.textContent = seatCardCount(v, i) + '장';
+      else setChips(chips, v ? v.chips[i] : seatLobbyChips(i));
       row.appendChild(icon);
       row.appendChild(nm);
       row.appendChild(sst);
@@ -886,6 +903,15 @@
     var list = state.poker.lobby;
     for (var k = 0; k < list.length; k++) if (list[k].seat === i) return list[k].chips;
     return PE().START_CHIPS;
+  }
+  // 도둑잡기 좌석의 남은 손패 수 (뷰가 없으면 로비가 알려 준 값)
+  function seatCardCount(v, i) {
+    if (v) return thiefCount(v, i);
+    var list = state.poker.lobby;
+    for (var k = 0; k < list.length; k++) {
+      if (list[k].seat === i && typeof list[k].cards === 'number') return list[k].cards;
+    }
+    return 0;
   }
 
   function updateSidebar() {
@@ -907,9 +933,15 @@
     // 타이머 / 칩 (카드 게임은 타이머 대신 칩을 보여준다)
     if (isCardGame()) {
       var pv = state.poker.view;
-      var pchips = pv ? pv.chips : [PE().START_CHIPS, PE().START_CHIPS];
-      setChips($('chipsBlack'), pchips[0]);
-      setChips($('chipsWhite'), pchips[1]);
+      if (isThief()) {
+        // 칩이 없는 종목 — 남은 손패 수로 대체한다
+        $('chipsBlack').textContent = seatCardCount(pv, 0) + '장';
+        $('chipsWhite').textContent = seatCardCount(pv, 1) + '장';
+      } else {
+        var pchips = pv ? pv.chips : [PE().START_CHIPS, PE().START_CHIPS];
+        setChips($('chipsBlack'), pchips[0]);
+        setChips($('chipsWhite'), pchips[1]);
+      }
     } else {
       $('timerBlack').textContent = fmtTime(state.times[BLACK]);
       $('timerWhite').textContent = fmtTime(state.times[WHITE]);
@@ -1022,7 +1054,9 @@
       }
       var c = document.createElement('span');
       c.className = 'tp-chips';
-      setChips(c, p.chips);
+      // 도둑잡기는 칩 대신 손패 수 (아직 시작 전이면 아무것도 적지 않는다)
+      if (isThief()) c.textContent = typeof p.cards === 'number' ? (p.cards + '장') : '';
+      else setChips(c, p.chips);
       row.appendChild(c);
       list.appendChild(row);
     });
@@ -1099,7 +1133,9 @@
         (pokerActor(pv) === null ? '준비' : seatName(pokerActor(pv)) + ' 차례');
       left.textContent = ptxt;
       var PNB = ' ';
-      right.textContent = '내 칩: ' + (pv ? pv.chips[pokerMyIndex()] : PE().START_CHIPS) +
+      right.textContent = (isThief()
+        ? '내 카드: ' + seatCardCount(pv, pokerMyIndex()) + '장'
+        : '내 칩: ' + (pv ? pv.chips[pokerMyIndex()] : PE().START_CHIPS)) +
         PNB + PNB + PNB + PNB + '100%';
       return;
     }
@@ -1135,11 +1171,13 @@
   function updateExcelFormula() {
     var nb = $('excelNameBox'), fx = $('excelFormula');
     if (!nb || !fx) return;
-    // 카드 게임: 수식 입력줄에 팟을 =POT(240) 형태로 노출한다
+    // 카드 게임: 수식 입력줄에 팟을 =POT(240) 형태로 노출한다.
+    // 도둑잡기는 팟이 없으니 판에 남은 카드 수를 =CARDS(5) 로 보여 준다.
     if (isCardGame()) {
       var pv = state.poker.view;
       nb.textContent = 'B2';
-      fx.textContent = pv ? '=POT(' + pv.pot + ')' : '';
+      if (isThief()) fx.textContent = pv ? '=CARDS(' + pv.inPlay + ')' : '';
+      else fx.textContent = pv ? '=POT(' + pv.pot + ')' : '';
       return;
     }
     // 알까기: 마지막 치기를 =FLICK("흑돌") 로 노출한다 (좌표가 없는 종목)
@@ -1826,6 +1864,11 @@
     state.poker.log = [];
     state.poker.seq = 0;
     if (!state.online) state.poker.seat = 0;
+    var t = state.poker.thief;
+    if (t.timer) { clearTimeout(t.timer); t.timer = null; }
+    t.prev = []; t.seat = -1; t.ready = false; t.added = null; t.out = [];
+    state.poker.reveal = null;
+    thiefClearReveal();
     hideGate();
   }
 
@@ -1835,6 +1878,8 @@
   function pokerActor(v) {
     if (!v || v.over) return null;
     var n = v.hands.length, i;
+    // 도둑잡기: 지금 뽑을 차례인 좌석 하나뿐이다 (뷰/전체 상태 모두 turn 을 갖는다)
+    if (isThief()) return typeof v.turn === 'number' ? v.turn : null;
     if (v.phase === 'discard') {
       for (i = 0; i < n; i++) {
         if (!pokerSeatGone(v, i) && v.hands[i].cards.length === 4) return i;
@@ -1853,15 +1898,33 @@
   function pokerHasOpen(v, i) {
     return v.hands[i].cards.some(function (c) { return c && c.open; });
   }
-  // 좌석이 이번 판에서 빠졌는가 (다이 / 파산 / 퇴장)
-  function pokerSeatGone(v, i) { return !!(v.folded && v.folded[i]); }
+  // 좌석이 이번 판에서 빠졌는가 (다이 / 파산 / 퇴장 · 도둑잡기는 탈출 / 퇴장)
+  function pokerSeatGone(v, i) {
+    if (!v) return false;
+    if (isThief()) return !!((v.escaped && v.escaped[i]) || (v.left && v.left[i]));
+    return !!(v.folded && v.folded[i]);
+  }
   // 좌석 상태 라벨 (없으면 null)
   function pokerSeatState(v, i) {
     if (!v) return null;
     if (v.left && v.left[i]) return '퇴장';
+    if (isThief()) {
+      if (v.escaped && v.escaped[i]) {
+        var k = (v.escapeOrder || []).indexOf(i);
+        return k === -1 ? '탈출' : ('탈출 ' + (k + 1) + '위');
+      }
+      if (v.over && v.result && v.result.loser === i) return '도둑';
+      return null;
+    }
     if (v.out && v.out[i]) return '파산';
     if (v.folded && v.folded[i]) return '다이';
     return null;
+  }
+  // 좌석의 남은 손패 수 (도둑잡기 — 뷰의 counts 를 우선 쓴다)
+  function thiefCount(v, i) {
+    if (!v) return 0;
+    if (v.counts && typeof v.counts[i] === 'number') return v.counts[i];
+    return (v.hands && v.hands[i]) ? v.hands[i].cards.length : 0;
   }
   // 화면 아래쪽("내 자리")에 놓을 좌석
   function pokerMyIndex() {
@@ -1873,6 +1936,7 @@
   // 지금 이 화면의 주인이 매장/오픈 카드를 고를 수 있는가
   function pokerCanPick(v, me) {
     if (!v || v.over || v.me !== me) return false;
+    if (isThief()) return false;    // 도둑잡기는 "남의 패"를 고른다 (thiefCanDraw)
     if (v.phase === 'discard') return v.hands[me].cards.length === 4;
     if (v.phase === 'open') return !pokerHasOpen(v, me);
     return false;
@@ -1883,12 +1947,14 @@
     return (n >= 1 && n <= 20) ? String.fromCharCode(0x245F + n) : ('(' + n + ')');
   }
   function appendPokerEvents(events) {
+    // 새 판의 머리글 이벤트 (도둑잡기는 배분, 나머지는 앤티)
+    var HEAD = isThief() ? 'deal' : 'hand';
     (events || []).forEach(function (ev) {
       var text = PE().describeEvent(ev, seatNames());
       if (!text) return;
-      if (ev.t === 'hand') state.poker.seq = 0;
+      if (ev.t === HEAD) state.poker.seq = 0;
       state.poker.seq += 1;
-      state.poker.log.push({ text: text, seq: state.poker.seq, head: ev.t === 'hand' });
+      state.poker.log.push({ text: text, seq: state.poker.seq, head: ev.t === HEAD });
     });
   }
 
@@ -1961,6 +2027,158 @@
     return el;
   }
 
+  // ── 도둑잡기 카드 ─────────────────────────────────────
+  // 조커 아트: 손으로 좌표를 잡은 광대 모자(방울 3개) — 어떤 기성 이미지도
+  // 쓰지 않는다. 세 갈래로 늘어진 뿔 + 끝의 방울 + 머리띠가 전부다.
+  var JOKER_ART =
+    '<svg class="pc-joker-art" viewBox="0 0 40 44" fill="none" ' +
+    'stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">' +
+    '<path d="M20 28C11 26 6 19 7 12"/>' +
+    '<path d="M20 28C20 19 20 13 20 8"/>' +
+    '<path d="M20 28C29 26 34 19 33 12"/>' +
+    '<circle cx="7" cy="9" r="2.6" fill="currentColor" stroke="none"/>' +
+    '<circle cx="20" cy="5" r="2.6" fill="currentColor" stroke="none"/>' +
+    '<circle cx="33" cy="9" r="2.6" fill="currentColor" stroke="none"/>' +
+    '<rect x="7" y="28" width="26" height="7" rx="3.5" fill="currentColor" stroke="none"/>' +
+    '</svg>';
+
+  // 조커 한 장. 엑셀 테마에서는 '★JOKER' 셀 텍스트로 바뀐다.
+  function makeJokerCardEl() {
+    var el = document.createElement('div');
+    el.className = 'pcard joker';
+    var art = document.createElement('span');
+    art.className = 'pc-joker';
+    art.innerHTML = JOKER_ART;
+    var label = document.createElement('span');
+    label.className = 'pc-joker-label';
+    label.textContent = '★ JOKER';
+    var cell = document.createElement('span');
+    cell.className = 'pc-cell';
+    cell.textContent = '★JOKER';
+    el.appendChild(art);
+    el.appendChild(label);
+    el.appendChild(cell);
+    return el;
+  }
+
+  // 도둑잡기 카드 한 장 (card 가 null 이면 뒷면 = 남의 패)
+  function makeThiefCardEl(card) {
+    if (!card) return makeCardEl(null, {});
+    if (card.r === TH.JOKER_RANK) return makeJokerCardEl();
+    return makeCardEl(card, {});
+  }
+
+  function thiefKey(c) { return c ? (c.r + '/' + c.s) : '?'; }
+  function thiefFromKey(k) {
+    var a = String(k).split('/');
+    return { r: Number(a[0]), s: Number(a[1]) };
+  }
+
+  // 내 손패의 "표시 순서". 엔진은 뽑기 인덱스를 위해 진짜 순서를 유지하므로
+  // 정렬은 화면에서만 한다 (data-idx 에는 진짜 인덱스를 그대로 남긴다).
+  // 조커가 맨 앞, 그 다음 무늬 → 랭크 순.
+  function thiefSorted(cards) {
+    var arr = cards.map(function (c, i) { return { c: c, i: i }; });
+    arr.sort(function (a, b) {
+      if (!a.c || !b.c) return a.i - b.i;
+      var aj = a.c.r === TH.JOKER_RANK ? 0 : 1;
+      var bj = b.c.r === TH.JOKER_RANK ? 0 : 1;
+      if (aj !== bj) return aj - bj;
+      if (a.c.s !== b.c.s) return a.c.s - b.c.s;
+      if (a.c.r !== b.c.r) return a.c.r - b.c.r;
+      return a.i - b.i;
+    });
+    return arr;
+  }
+
+  // 지금 이 화면의 주인이 idx 좌석의 패에서 한 장 뽑을 수 있는가
+  function thiefCanDrawFrom(v, idx) {
+    if (!v || v.over) return false;
+    var me = pokerMyIndex();
+    if (v.turn !== me || v.target !== idx) return false;
+    // 온라인은 서버가 내려 준 "내 시점" 뷰여야 하고,
+    // 로컬 핫시트는 가리개를 넘긴 뒤여야 한다.
+    if (state.online) return v.me === me;
+    return state.poker.viewer === me;
+  }
+
+  // 내 손패가 어떻게 변했는지(뽑아 온 카드 / 짝지어 버린 카드) 계산한다.
+  // 같은 뷰로 다시 그리면 차이가 없으므로 연출이 두 번 재생되지 않는다.
+  function thiefTrackHand(v, me) {
+    var t = state.poker.thief;
+    var mineView = !!(v && v.me === me && v.hands && v.hands[me]);
+    var keys = mineView ? v.hands[me].cards.map(thiefKey) : [];
+    if (!mineView || !t.ready || t.seat !== me) {
+      t.prev = keys;
+      t.seat = me;
+      t.ready = mineView;
+      t.added = null;
+      t.out = [];
+      return;
+    }
+    var pool = t.prev.slice();
+    var added = null;
+    keys.forEach(function (k) {
+      var p = pool.indexOf(k);
+      if (p === -1) added = k;
+      else pool.splice(p, 1);
+    });
+    t.prev = keys;
+    t.added = added;
+    // 사라진 카드는 짝지어 버린 2장뿐이다 (그 이상이면 새 판이므로 연출 없음)
+    t.out = pool.length && pool.length <= 2 ? pool.slice() : [];
+    // 짝이 맞아 곧바로 버려진 경우, 뽑아 온 카드는 손패에 들어온 적이 없다.
+    // 뷰가 "나에게만" 실어 준 lastDraw 로 그 한 장을 채워 두 장이 함께 사라지게 한다.
+    if (t.out.length === 1 && v.lastDraw && v.lastDraw.paired && v.lastDraw.p === me) {
+      t.out.push(thiefKey(v.lastDraw.card));
+    }
+    if (t.out.length) {
+      if (t.timer) clearTimeout(t.timer);
+      t.timer = setTimeout(function () {
+        t.timer = null;
+        t.out = [];
+        t.added = null;
+        if (isThief()) renderCardTable();
+      }, 460);
+    }
+  }
+
+  function renderThiefHand(host, v, idx, mine) {
+    host.innerHTML = '';
+    if (!v) return;
+    var t = state.poker.thief;
+    if (mine && v.me === idx) {
+      // 내 패 — 앞면. 정렬해서 보여 주되 뽑기 인덱스는 진짜 순서를 쓴다.
+      thiefSorted(v.hands[idx].cards).forEach(function (o) {
+        var el = makeThiefCardEl(o.c);
+        el.setAttribute('data-idx', String(o.i));
+        if (t.added && thiefKey(o.c) === t.added) el.classList.add('just-drawn');
+        host.appendChild(el);
+      });
+      // 짝지어 버린 2장은 잠깐 남겨 두고 사라지게 한다
+      t.out.forEach(function (k) {
+        var el = makeThiefCardEl(thiefFromKey(k));
+        el.classList.add('pair-out');
+        host.appendChild(el);
+      });
+      return;
+    }
+    // 남의 패 — 장수만큼 뒷면. 내 차례이고 이 좌석이 뽑을 대상이면 클릭 가능.
+    var n = thiefCount(v, idx);
+    var pickable = thiefCanDrawFrom(v, idx);
+    for (var i = 0; i < n; i++) {
+      var back = makeThiefCardEl(v.hands[idx].cards[i] || null);
+      back.setAttribute('data-idx', String(i));
+      if (pickable) {
+        back.classList.add('selectable');
+        (function (k) {
+          back.addEventListener('click', function () { thiefDraw(k); });
+        })(i);
+      }
+      host.appendChild(back);
+    }
+  }
+
   // 라벨이 붙은 카드 묶음 하나 ('비공개 · 나만 봄' / '공개 · 상대에게 보임').
   function makeCardGroup(label, extraClass) {
     var g = document.createElement('div');
@@ -1973,6 +2191,7 @@
   }
 
   function renderHandCards(host, v, idx, mine, pickable) {
+    if (isThief()) { renderThiefHand(host, v, idx, mine); return; }
     host.innerHTML = '';
     if (!v) return;
     var indian = isIndian();
@@ -2020,6 +2239,11 @@
   function pokerPhaseText(v) {
     if (!v) return '';
     if (v.over) return '판 종료';
+    if (isThief()) {
+      var alive = 0;
+      for (var i = 0; i < v.players; i++) if (!pokerSeatGone(v, i)) alive += 1;
+      return '남은 사람 ' + alive + '명';
+    }
     if (isIndian()) return v.phase === 'bet' ? '베팅 (내 카드는 볼 수 없습니다)' : '';
     if (v.phase === 'discard') return '매장 (1장 버리기)';
     if (v.phase === 'open') return '오픈 (1장 공개)';
@@ -2056,9 +2280,22 @@
     }).join(' · ');
   }
 
+  // 도둑잡기: 탈출 순서 한 줄 ('플레이어 2 → 플레이어 1')
+  function thiefEscapeText(v) {
+    var ord = (v.result && v.result.escapeOrder) || v.escapeOrder || [];
+    return ord.map(seatName).join(' → ');
+  }
+  function thiefResultText(v) {
+    if (!v || !v.over || !v.result) return '';
+    if (v.result.loser === null) return '판 종료';
+    var esc = thiefEscapeText(v);
+    return '도둑: ' + seatName(v.result.loser) + (esc ? ' · 탈출 ' + esc : '');
+  }
+
   function pokerResultText(v) {
     if (!v || !v.over || !v.result) return '';
     var r = v.result;
+    if (isThief()) return thiefResultText(v);
     if (isIndian()) {
       var ws = pokerWinners(r);
       var pen = penaltyText(v);
@@ -2076,9 +2313,43 @@
     return name + ' 승 (' + cat + ') +' + r.amount;
   }
 
+  // ── 도둑잡기 액션 바 ──────────────────────────────────
+  // 버튼은 '패 섞기' 하나뿐이다 (뽑기는 상대 카드를 직접 누른다).
+  //  · 온라인 — 지금 뽑히는 쪽(대상)에게만 보인다.
+  //  · 로컬 핫시트 — 대상이 옆에서 눌러 주면 된다. 자기 패를 섞는 것이라
+  //    화면(뽑는 사람 시점)에는 어떤 정보도 드러나지 않는다.
+  function renderThiefActions(host, v, me) {
+    if (!v) { addHint(host, state.online ? waitingHint() : ''); return; }
+    if (v.over) { addHint(host, thiefResultText(v)); return; }
+    var gated = !state.online && state.poker.viewer === null;
+    var target = typeof v.target === 'number' ? v.target : null;
+    var turn = typeof v.turn === 'number' ? v.turn : null;
+    // 로컬: 방금 뽑은 사람에게 결과를 보여 주는 중 (다음 사람은 아직 보면 안 된다)
+    if (!state.online && state.poker.reveal === me) {
+      addHint(host, '가져온 카드를 확인하세요');
+      return;
+    }
+    if (gated) addHint(host, '차례를 넘기는 중...');
+    else if (turn === me) addHint(host, seatName(target) + '의 패에서 한 장을 고르세요');
+    else if (target === me) addHint(host, seatName(turn) + '이(가) 내 패에서 뽑는 중...');
+    else addHint(host, seatName(turn) + '이(가) 뽑는 중...');
+
+    var canShuffle = target !== null && !v.shuffled &&
+      (state.online ? v.me === target : !gated);
+    if (!canShuffle) return;
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ct-btn';
+    btn.setAttribute('data-action', 'shuffle');
+    btn.textContent = state.online ? '패 섞기' : (seatName(target) + ' 패 섞기');
+    btn.addEventListener('click', function () { thiefShuffle(); });
+    host.appendChild(btn);
+  }
+
   function renderActionBar(v, me) {
     var host = $('ctActions');
     host.innerHTML = '';
+    if (isThief()) { renderThiefActions(host, v, me); return; }
     if (!v) {
       addHint(host, state.online ? waitingHint() : '');
       return;
@@ -2133,7 +2404,8 @@
     var pod = document.createElement('div');
     var stateLabel = pokerSeatState(v, i);
     pod.className = 'ct-pod' + (isMe ? ' me' : '') +
-      (actor === i ? ' turn' : '') + (stateLabel ? ' gone' : '');
+      (actor === i ? ' turn' : '') + (pokerSeatGone(v, i) ? ' gone' : '') +
+      (isThief() && v && v.over && v.result && v.result.loser === i ? ' thief-loser' : '');
     pod.setAttribute('data-seat', String(i));
 
     var head = document.createElement('div');
@@ -2162,7 +2434,8 @@
     }
     var chips = document.createElement('span');
     chips.className = 'ct-pod-chips';
-    setChips(chips, v ? v.chips[i] : (state.online ? seatLobbyChips(i) : PE().START_CHIPS));
+    if (isThief()) chips.textContent = seatCardCount(v, i) + '장';
+    else setChips(chips, v ? v.chips[i] : (state.online ? seatLobbyChips(i) : PE().START_CHIPS));
     head.appendChild(chips);
     pod.appendChild(head);
 
@@ -2178,6 +2451,7 @@
     var me = pokerMyIndex();
     var n = pokerSeatCount();
     var actor = pokerActor(v);
+    if (isThief()) thiefTrackHand(v, me);
     var opps = $('ctOpps');
     opps.innerHTML = '';
     for (var k = 1; k < n; k++) {
@@ -2186,7 +2460,10 @@
     var mine = $('ctMine');
     mine.innerHTML = '';
     mine.appendChild(makeSeatPod(v, me, true, actor));
-    $('ctPot').textContent = '팟 ' + (v ? v.pot : 0);
+    // 도둑잡기에는 팟이 없다 — 대신 판에 남은 카드 수를 가운데에 둔다
+    $('ctPot').textContent = isThief()
+      ? ('남은 카드 ' + (v ? v.inPlay : 0) + '장')
+      : ('팟 ' + (v ? v.pot : 0));
     $('ctPhase').textContent = pokerPhaseText(v);
     renderActionBar(v, me);
   }
@@ -2214,7 +2491,9 @@
   // ── 로컬 진행 ─────────────────────────────────────────
   // 종목별 덱 (인디언포커는 1~10 두 벌 = 20장)
   function localDeck() {
-    return K.shuffle(isIndian() ? IP.makeDeck() : K.makeDeck());
+    if (isIndian()) return K.shuffle(IP.makeDeck());
+    if (isThief()) return K.shuffle(TH.makeDeck());
+    return K.shuffle(K.makeDeck());
   }
 
   function localStartPokerMatch() {
@@ -2293,9 +2572,37 @@
     var res = PE().apply(st, actor, action);
     if (res.error) { toast(res.error); return; }
     state.poker.local = res.state;
-    state.poker.viewer = null;      // 결정할 때마다 다시 가린다
     appendPokerEvents(res.events);
+    // 도둑잡기는 "무엇을 뽑았는지" 를 뽑은 본인이 봐야 한다.
+    // 곧바로 가리면 자기가 가져온 카드를 영영 못 보므로 잠깐 보여 준 뒤 가린다.
+    if (isThief()) { thiefRevealThenGate(actor); return; }
+    state.poker.viewer = null;      // 결정할 때마다 다시 가린다
     pokerLocalSync();
+  }
+
+  // 로컬 핫시트 전용: 뽑은 결과(가져온 카드 / 짝지어 버린 두 장)를 본인에게
+  // 잠깐 보여 주고, 그 다음에 가리개를 띄워 차례를 넘긴다.
+  var thiefRevealTimer = null;
+  function thiefClearReveal() {
+    if (thiefRevealTimer) { clearTimeout(thiefRevealTimer); thiefRevealTimer = null; }
+  }
+  function thiefRevealThenGate(actor) {
+    var st = state.poker.local;
+    thiefClearReveal();
+    state.poker.reveal = null;
+    if (!st || st.over) { state.poker.viewer = null; pokerLocalSync(); return; }
+    state.poker.reveal = actor;
+    state.poker.viewer = actor;
+    state.poker.view = TH.viewFor(st, actor);
+    renderCardTable();
+    updateSidebar();
+    renderMoveList();
+    thiefRevealTimer = setTimeout(function () {
+      thiefRevealTimer = null;
+      state.poker.reveal = null;
+      state.poker.viewer = null;
+      pokerLocalSync();
+    }, 1000);
   }
 
   function pokerPick(index) {
@@ -2304,6 +2611,52 @@
     var me = pokerMyIndex();
     if (!pokerCanPick(v, me)) return;
     pokerAct({ type: v.phase === 'discard' ? 'discard' : 'open', index: index });
+  }
+
+  // ── 도둑잡기 전용 입력 ─────────────────────────────────
+  // 뽑기: 대상 좌석의 뒷면 카드를 눌렀을 때. 액션 경로는 포커와 같다.
+  function thiefDraw(index) {
+    var v = state.poker.view;
+    if (!thiefCanDrawFrom(v, v ? v.target : -1)) return;
+    pokerAct({ type: 'draw', index: index });
+  }
+
+  // 무작위 순열 (로컬 전용 — 온라인은 서버가 자기 난수로 만든다)
+  function randomPerm(len) {
+    var a = [], i, j, t;
+    for (i = 0; i < len; i++) a.push(i);
+    for (i = len - 1; i > 0; i--) {
+      j = Math.floor(Math.random() * (i + 1));
+      if (j > i) j = i;
+      t = a[i]; a[i] = a[j]; a[j] = t;
+    }
+    return a;
+  }
+
+  // 미끼 섞기. 섞는 주체는 "지금 뽑히는 쪽"이라 차례 주인과 다르다.
+  // 그래서 로컬에서는 pokerAct(차례 주인 기준)를 타지 않고 직접 적용하고,
+  // 가리개도 다시 띄우지 않는다 (뽑는 사람의 차례는 그대로다).
+  function thiefShuffle() {
+    var v = state.poker.view;
+    if (!v || v.over || typeof v.target !== 'number' || v.shuffled) return;
+    if (state.online) {
+      if (v.me !== v.target) { toast('지금은 섞을 수 없습니다'); return; }
+      wsSend({ type: 'pokerAction', action: { type: 'shuffle' } });
+      return;
+    }
+    var st = state.poker.local;
+    if (!st || st.over) return;
+    var target = st.target;
+    var res = TH.apply(st, target, {
+      type: 'shuffle', perm: randomPerm(st.hands[target].cards.length)
+    });
+    if (res.error) { toast(res.error); return; }
+    state.poker.local = res.state;
+    appendPokerEvents(res.events);
+    state.poker.view = TH.viewFor(res.state, state.poker.viewer);
+    renderCardTable();
+    updateSidebar();
+    renderMoveList();
   }
 
   // 온라인: 서버가 보낸 내 시점 뷰를 그대로 반영
@@ -2400,12 +2753,41 @@
     $('resultModal').hidden = false;
   }
 
+  // 도둑잡기 결과 모달 — 조커 카드 한 장 + 탈출 순서
+  function showThiefResultModal() {
+    var v = state.poker.view;
+    var r = v.result;
+    var stone = $('modalStone'), title = $('modalTitle'), msg = $('modalMessage');
+    var extra = $('modalExtra');
+    stone.hidden = true;
+    if (extra) {
+      extra.innerHTML = '';
+      extra.hidden = false;
+      var card = makeJokerCardEl();
+      card.classList.add('modal-card-face');
+      extra.appendChild(card);
+    }
+    if (r.loser === null) {
+      title.textContent = '판 종료';
+      msg.textContent = '남은 사람이 없습니다.';
+    } else {
+      var mine = state.online && r.loser === state.poker.seat;
+      title.textContent = '도둑: ' + seatName(r.loser);
+      var esc = thiefEscapeText(v);
+      msg.textContent = (mine ? '조커가 끝까지 남았습니다. ' : '') +
+        (esc ? '탈출 순서 — ' + esc : '아무도 탈출하지 못했습니다');
+    }
+    setPlayAgainLabel(state.online && !state.poker.isHost ? '방장 대기' : '새 경기');
+    $('resultModal').hidden = false;
+  }
+
   function showPokerResultModal() {
     var v = state.poker.view;
     if (!v || !v.over || !v.result) return;
     // 카드 게임 모달은 예전 그대로다 (닫기 버튼 없음 / 배경·Escape 닫기 없음)
     setResultModalKind('card');
-    if (isIndian()) showIndianResultModal();
+    if (isThief()) showThiefResultModal();
+    else if (isIndian()) showIndianResultModal();
     else showPokerTableModal();
   }
 
@@ -2504,6 +2886,9 @@
     var close = $('btnCloseResult');
     modal.setAttribute('data-kind', kind);
     if (close) close.hidden = kind !== 'board';
+    // 추가 영역(도둑잡기의 조커 카드)은 매번 비우고 시작한다
+    var extra = $('modalExtra');
+    if (extra) { extra.innerHTML = ''; extra.hidden = true; }
   }
   function isBoardResultModal() {
     var modal = $('resultModal');
@@ -2739,6 +3124,7 @@
     document.body.classList.toggle('game-alkkagi', isAlk());
     document.body.classList.toggle('game-poker', state.game === 'poker');
     document.body.classList.toggle('game-indian', isIndian());
+    document.body.classList.toggle('game-thief', isThief());
     document.body.classList.toggle('game-table', card);
 
     // 중앙 영역 교체: 보드 ↔ 카드 테이블. 넘어가는 쪽의 DOM 은 완전히 비운다

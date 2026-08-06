@@ -1931,6 +1931,361 @@ const isDrop = (r, c) => (m) => m.type === 'move' && m.game === 'connect4' && m.
     await wait(60);
   }
 
+  // ============================================================
+  // 도둑잡기 테이블 방 (2~6인)
+  //   53장(52 + 조커)을 전부 나눠 갖고, 시계방향 다음 사람의 패에서 한 장씩
+  //   뽑아 짝을 버린다. 마지막에 조커를 든 사람이 도둑.
+  //   포커/인디언포커와 같은 테이블 방 코드 경로를 쓰되 액션이 완전히 다르다.
+  // ============================================================
+  const thiefTable = (n) => pokerTable(n, 'thief');
+  // 회선에 실제로 실린 원문(JSON 문자열)까지 모은다 — 마스킹은 눈으로가 아니라
+  // "바이트에 없다"로 증명해야 한다.
+  function collectRaw(ws) {
+    const a = [];
+    ws.on('message', (d) => a.push(d.toString()));
+    return a;
+  }
+  const hasJoker = (v, seat) =>
+    !!(v && v.hands[seat].cards.some((c) => c && c.r === 0));
+  // 좌석 seat 이 자기 시점 뷰에서 본 자기 손패
+  const myHand = (c) => { const v = seatView(c); return v ? v.hands[c.seat].cards : null; };
+
+  // 55. 로비 / 시작 / 좌석별 마스킹
+  {
+    const t = await thiefTable(3);
+    const cl = t.cl;
+    assert('도둑잡기 방 생성: 테이블 방(좌석 0 · 방장 · 정원 6)',
+      t.created.game === 'thief' && t.created.seat === 0 &&
+      t.created.isHost === true && t.created.capacity === 6, t.created);
+    const lb = lastOf(cl[0].box, 'tableLobby');
+    assert('도둑잡기 로비: 3명 · 시작 가능 · 시작 전에는 손패 수가 없다',
+      lb.players.length === 3 && lb.canStart === true && lb.started === false &&
+      lb.players.every((p) => p.cards === null), lb.players);
+
+    // 원문 수집기를 붙인 뒤에 시작한다 (민감한 프레임은 전부 이 뒤에 온다)
+    const raws = cl.map((c) => collectRaw(c.ws));
+    cl.forEach((c) => { c.box.length = 0; });
+    send(cl[0].ws, { type: 'startMatch' });
+    for (const c of cl) await until(c.box, (m) => m.type === 'pokerState');
+
+    const v0 = seatView(cl[0]), v1 = seatView(cl[1]), v2 = seatView(cl[2]);
+    assert('도둑잡기 시작: 3인 · 딜러 0 · 선은 딜러 왼쪽(P1)',
+      v0.players === 3 && v0.dealer === 0 && v0.turn === 1 && v0.target === 2 &&
+      v0.phase === 'draw' && v0.over === false,
+      { t: v0.turn, g: v0.target, d: v0.dealer });
+    const total = v0.counts.reduce((a, b) => a + b, 0);
+    assert('도둑잡기: 53장을 전부 나누고 첫 정리로 짝을 버린 상태',
+      v0.counts.join(',') === v1.counts.join(',') &&
+      v1.counts.join(',') === v2.counts.join(',') &&
+      total === v0.inPlay && total > 0 && total <= 53 && total % 2 === 1,
+      { c: v0.counts, total });
+    const masked = [[v0, 0], [v1, 1], [v2, 2]].every(([v, seat]) =>
+      v.me === seat &&
+      v.hands[seat].cards.every((x) => x && typeof x.r === 'number') &&
+      v.hands[seat].cards.length === v.counts[seat] &&
+      [0, 1, 2].filter((j) => j !== seat).every((j) =>
+        v.hands[j].cards.length === v.counts[j] &&
+        v.hands[j].cards.every((x) => x === null)));
+    assert('도둑잡기 마스킹: 내 패만 보이고 남의 패는 장수(=null 배열)만', masked);
+    assert('도둑잡기: 덱은 전송되지 않는다',
+      v0.deck === undefined && v1.deck === undefined && v2.deck === undefined);
+    const jokerSeats = [0, 1, 2].filter((i) => hasJoker([v0, v1, v2][i], i));
+    assert('도둑잡기: 조커는 정확히 한 사람에게만 보인다',
+      jokerSeats.length === 1, jokerSeats);
+
+    // 회선 원문 검사 — 남의 카드 값이 한 글자도 실려 오면 안 된다
+    const jokerSeat = jokerSeats[0];
+    let wireOk = true, jokerLeak = false;
+    raws.forEach((box, i) => {
+      box.forEach((s) => {
+        const m = JSON.parse(s);
+        if (m.type !== 'pokerState' || !m.view || m.view.over) return;
+        m.view.hands.forEach((h, j) => {
+          if (j === i) return;
+          if (h.cards.some((x) => x !== null)) wireOk = false;
+        });
+        // 조커({"r":0,"s":-1})는 보유자의 프레임에만 있어야 한다
+        if (i !== jokerSeat && s.indexOf('"s":-1') !== -1) jokerLeak = true;
+      });
+    });
+    assert('도둑잡기: 회선 원문에 남의 카드가 실리지 않는다', wireOk);
+    assert('도둑잡기: 조커는 보유자 외에는 회선에도 나타나지 않는다', !jokerLeak);
+    // 로비에도 손패 수만 (카드 값은 없다)
+    const lb2 = lastOf(cl[0].box, 'tableLobby');
+    assert('도둑잡기 로비: 시작 후에는 좌석별 남은 손패 수가 실린다',
+      lb2.started === true &&
+      lb2.players.map((p) => p.cards).join(',') === v0.counts.join(','), lb2.players);
+
+    // 시작된 방에는 들어갈 수 없다
+    const late = await open(); const lm = collect(late);
+    send(late, { type: 'join', code: t.code });
+    const e = await until(lm, (m) => m.type === 'error');
+    assert('도둑잡기: 시작된 방에는 입장할 수 없다', e.message === '이미 시작된 방입니다', e);
+    late.close();
+
+    cl.forEach((c) => c.ws.close());
+    await wait(80);
+  }
+
+  // 56. 뽑기: 차례 강제 / 인덱스 검증 / 차례 이동
+  {
+    const t = await thiefTable(3);
+    const cl = t.cl;
+    cl.forEach((c) => { c.box.length = 0; });
+    send(cl[0].ws, { type: 'startMatch' });
+    for (const c of cl) await until(c.box, (m) => m.type === 'pokerState');
+    let v = curView(cl);
+    const turn = v.turn, target = v.target;
+    const other = [0, 1, 2].find((i) => i !== turn);
+
+    // 차례가 아닌 좌석의 뽑기는 거부되고 방송도 되지 않는다
+    cl.forEach((c) => { c.box.length = 0; });
+    send(cl.find((c) => c.seat === other).ws,
+      { type: 'pokerAction', action: { type: 'draw', index: 0 } });
+    const bad = await until(cl.find((c) => c.seat === other).box, (m) => m.type === 'invalid');
+    await wait(60);
+    assert('도둑잡기: 차례가 아닌 좌석의 뽑기 거부',
+      bad.reason === 'poker' && bad.message === '당신의 차례가 아닙니다', bad);
+    assert('도둑잡기: 거부된 액션은 브로드캐스트되지 않는다',
+      !cl.some((c) => c.box.some((m) => m.type === 'pokerState')));
+
+    // 범위를 벗어난 인덱스도 거부
+    const actor = cl.find((c) => c.seat === turn);
+    actor.box.length = 0;
+    send(actor.ws, { type: 'pokerAction', action: { type: 'draw', index: 999 } });
+    const bad2 = await until(actor.box, (m) => m.type === 'invalid');
+    assert('도둑잡기: 없는 카드 위치는 거부',
+      bad2.message === '잘못된 카드 위치', bad2);
+
+    // 정상 뽑기 → 대상의 손패가 한 장 줄고 차례가 대상에게 넘어간다
+    const beforeTarget = v.counts[target];
+    const beforeTurn = v.counts[turn];
+    await tableAct(cl, turn, { type: 'draw', index: 0 });
+    v = curView(cl);
+    const paired = v.counts[turn] === beforeTurn - 1;
+    assert('도둑잡기: 뽑으면 대상의 손패가 한 장 줄어든다',
+      v.counts[target] === beforeTarget - 1, { b: beforeTarget, a: v.counts[target] });
+    assert('도둑잡기: 짝이 맞으면 두 장이 버려지고, 아니면 내 손패가 한 장 는다',
+      paired ? v.counts[turn] === beforeTurn - 1 : v.counts[turn] === beforeTurn + 1,
+      { b: beforeTurn, a: v.counts[turn] });
+    assert('도둑잡기: 차례는 뽑힌 사람에게 넘어간다', v.turn === target, v.turn);
+    const ev = lastOf(cl[0].box, 'pokerState').events;
+    assert('도둑잡기: 뽑기 로그에는 카드 정보가 없다',
+      ev[0].t === 'draw' && ev[0].p === turn && ev[0].from === target &&
+      ev[0].r === undefined && ev[0].card === undefined, ev);
+    const evs = cl.map((c) => JSON.stringify(lastOf(c.box, 'pokerState').events));
+    assert('도둑잡기: 공개 로그는 전원에게 동일하다',
+      evs[0] === evs[1] && evs[1] === evs[2], evs[0]);
+
+    cl.forEach((c) => c.ws.close());
+    await wait(80);
+  }
+
+  // 57. 패 섞기: 대상만 · 차례당 1회
+  {
+    const t = await thiefTable(3);
+    const cl = t.cl;
+    cl.forEach((c) => { c.box.length = 0; });
+    send(cl[0].ws, { type: 'startMatch' });
+    for (const c of cl) await until(c.box, (m) => m.type === 'pokerState');
+    const v = curView(cl);
+    const target = cl.find((c) => c.seat === v.target);
+    const turn = cl.find((c) => c.seat === v.turn);
+
+    // 대상이 아닌 좌석은 섞을 수 없다
+    turn.box.length = 0;
+    send(turn.ws, { type: 'pokerAction', action: { type: 'shuffle' } });
+    const e1 = await until(turn.box, (m) => m.type === 'invalid');
+    assert('도둑잡기 섞기: 뽑히는 쪽이 아니면 거부',
+      e1.message === '지금 패를 섞을 수 있는 좌석이 아닙니다', e1);
+
+    // 대상이 섞으면 자기 손패 구성은 그대로이고 순서만 바뀐다
+    const beforeHand = myHand(target).map((c) => c.r + '/' + c.s);
+    await tableAct(cl, target.seat, { type: 'shuffle' });
+    const afterHand = myHand(target).map((c) => c.r + '/' + c.s);
+    assert('도둑잡기 섞기: 손패 구성은 그대로 (순서만 바뀐다)',
+      beforeHand.length === afterHand.length &&
+      beforeHand.slice().sort().join() === afterHand.slice().sort().join(),
+      { n: afterHand.length });
+    assert('도둑잡기 섞기: 섞기 표시가 켜지고, 로그에는 카드 정보가 없다',
+      curView(cl).shuffled === true &&
+      JSON.stringify(lastOf(target.box, 'pokerState').events) ===
+      JSON.stringify([{ t: 'shuffle', p: target.seat }]),
+      lastOf(target.box, 'pokerState').events);
+    assert('도둑잡기 섞기: 다른 좌석에는 여전히 뒷면만 보인다',
+      seatView(turn).hands[target.seat].cards.every((x) => x === null));
+
+    // 같은 차례에 두 번은 안 된다
+    target.box.length = 0;
+    send(target.ws, { type: 'pokerAction', action: { type: 'shuffle' } });
+    const e2 = await until(target.box, (m) => m.type === 'invalid');
+    assert('도둑잡기 섞기: 같은 차례에 두 번은 거부',
+      e2.message === '이번 차례에는 이미 섞었습니다', e2);
+
+    // 뽑고 나면(차례가 넘어가면) 새 대상이 다시 섞을 수 있다
+    await tableAct(cl, v.turn, { type: 'draw', index: 0 });
+    const v2 = curView(cl);
+    assert('도둑잡기 섞기: 차례가 넘어가면 제한이 풀린다', v2.shuffled === false);
+    if (!v2.over) {
+      await tableAct(cl, v2.target, { type: 'shuffle' });
+      assert('도둑잡기 섞기: 새 차례의 대상이 다시 섞을 수 있다',
+        curView(cl).shuffled === true);
+    }
+
+    cl.forEach((c) => c.ws.close());
+    await wait(80);
+  }
+
+  // 58. 끝까지 진행: 탈출 이벤트 + 도둑 확정 + 전원 동일한 결과
+  {
+    const t = await thiefTable(3);
+    const cl = t.cl;
+    const raws = cl.map((c) => collectRaw(c.ws));
+    cl.forEach((c) => { c.box.length = 0; });
+    send(cl[0].ws, { type: 'startMatch' });
+    for (const c of cl) await until(c.box, (m) => m.type === 'pokerState');
+
+    // 뽑을 위치는 매번 달라져야 한다 (항상 0 이면 카드가 자리만 돌며 순환한다)
+    let seed = 20250806;
+    const rnd = () => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed / 2147483648;
+    };
+    const seenEvents = [];
+    let v = curView(cl);
+    let steps = 0;
+    while (!v.over && steps++ < 900) {
+      const len = v.counts[v.target];
+      await tableAct(cl, v.turn, { type: 'draw', index: Math.min(len - 1, Math.floor(rnd() * len)) });
+      const st = lastOf(cl[0].box, 'pokerState');
+      if (st) st.events.forEach((e) => seenEvents.push(e));
+      v = curView(cl);
+    }
+    assert('도둑잡기: 판은 반드시 끝난다', v.over === true, { steps, c: v.counts });
+    assert('도둑잡기: 탈출 이벤트가 방송된다 (2명 탈출)',
+      seenEvents.filter((e) => e.t === 'escape').length === 2,
+      seenEvents.filter((e) => e.t === 'escape'));
+    assert('도둑잡기: 페어 버림 로그에는 랭크가 없다',
+      seenEvents.filter((e) => e.t === 'pair').length > 0 &&
+      seenEvents.filter((e) => e.t === 'pair').every((e) => e.pairs === 1 && e.r === undefined));
+    assert('도둑잡기: 도둑 한 명 + 나머지 전원 탈출',
+      v.result.loser !== null && v.result.escapeOrder.length === 2 &&
+      v.result.escapeOrder.indexOf(v.result.loser) === -1 &&
+      v.inPlay === 1, v.result);
+    const finals = cl.map((c) => JSON.stringify(seatView(c).result));
+    assert('도둑잡기: 결과는 전원에게 동일하게 방송된다',
+      finals[0] === finals[1] && finals[1] === finals[2], finals[0]);
+    const loserHand = cl.map((c) => JSON.stringify(seatView(c).hands[v.result.loser].cards));
+    assert('도둑잡기: 판이 끝나면 도둑의 조커가 전원에게 공개된다',
+      loserHand[0] === '[{"r":0,"s":-1}]' &&
+      loserHand[0] === loserHand[1] && loserHand[1] === loserHand[2], loserHand[0]);
+    assert('도둑잡기: 한 판이 곧 한 경기 → 끝나면 matchOver',
+      v.matchOver === true && lastOf(cl[0].box, 'tableLobby').canStart === true);
+
+    // 판이 끝나기 전까지는 어떤 클라이언트의 회선에도 남의 카드가 없었다
+    let leak = null;
+    raws.forEach((box, i) => {
+      box.forEach((s) => {
+        const m = JSON.parse(s);
+        if (m.type !== 'pokerState' || !m.view || m.view.over) return;
+        m.view.hands.forEach((h, j) => {
+          if (j !== i && h.cards.some((x) => x !== null)) leak = { i, j };
+        });
+      });
+    });
+    assert('도둑잡기: 판 내내(종료 전) 회선에 남의 카드가 실린 적이 없다', leak === null, leak);
+
+    // 방장의 '새 경기' 로 다시 돌릴 수 있다
+    cl.forEach((c) => { c.box.length = 0; });
+    send(cl[0].ws, { type: 'newMatch' });
+    for (const c of cl) await until(c.box, (m) => m.type === 'pokerState');
+    const fresh = curView(cl);
+    assert('도둑잡기: 방장이 새 경기를 시작하면 53장이 새로 깔린다',
+      fresh.over === false && fresh.escapeOrder.length === 0 &&
+      fresh.counts.reduce((a, b) => a + b, 0) === fresh.inPlay, fresh.counts);
+
+    cl.forEach((c) => c.ws.close());
+    await wait(80);
+  }
+
+  // 59. 진행 중 퇴장: 카드는 빠지고 조커만 다음 활성 좌석으로 넘어간다
+  {
+    const t = await thiefTable(3);
+    const cl = t.cl;
+    cl.forEach((c) => { c.box.length = 0; });
+    send(cl[0].ws, { type: 'startMatch' });
+    for (const c of cl) await until(c.box, (m) => m.type === 'pokerState');
+
+    const holder = cl.find((c) => hasJoker(seatView(c), c.seat));
+    const heir = cl.find((c) => c.seat === (holder.seat + 1) % 3);
+    const rest = cl.filter((c) => c !== holder);
+    const heirBefore = myHand(heir).length;
+    rest.forEach((c) => { c.box.length = 0; });
+    holder.ws.close();
+    for (const c of rest) await until(c.box, (m) => m.type === 'pokerState' && m.view.left[holder.seat]);
+
+    const hv = seatView(heir);
+    assert('도둑잡기 퇴장: 나간 좌석의 카드는 판에서 사라진다',
+      hv.left[holder.seat] === true && hv.counts[holder.seat] === 0, hv.counts);
+    assert('도둑잡기 퇴장: 조커는 시계방향 다음 활성 좌석의 맨 뒤로 넘어간다',
+      hv.hands[heir.seat].cards.length === heirBefore + 1 &&
+      hv.hands[heir.seat].cards[heirBefore].r === 0 &&
+      hv.hands[heir.seat].cards[heirBefore].s === -1,
+      hv.hands[heir.seat].cards.slice(-1));
+    const otherC = rest.find((c) => c !== heir);
+    assert('도둑잡기 퇴장: 조커가 어디로 갔는지는 로그에 남지 않는다',
+      lastOf(otherC.box, 'pokerState').events
+        .every((e) => e.t === 'leave' || e.t === 'escape' || e.t === 'end'),
+      lastOf(otherC.box, 'pokerState').events);
+    assert('도둑잡기 퇴장: 남은 사람에게는 여전히 뒷면만 보인다',
+      seatView(otherC).hands[heir.seat].cards.every((x) => x === null));
+    assert('도둑잡기 퇴장: 남은 사람들에게 알림이 간다',
+      otherC.box.some((m) => m.type === 'tableNotice' &&
+        m.text.indexOf('플레이어 ' + (holder.seat + 1)) === 0), lastOf(otherC.box, 'tableNotice'));
+
+    // 한 명 더 나가면 로비로 돌아온다
+    rest.forEach((c) => { c.box.length = 0; });
+    heir.ws.close();
+    const back = await until(otherC.box, (m) => m.type === 'tableLobby' && m.started === false);
+    assert('도둑잡기: 혼자 남으면 로비로 돌아온다',
+      back.players.length === 1 && back.notice === '혼자 남아 로비로 돌아왔습니다', back);
+    otherC.ws.close();
+    await wait(80);
+  }
+
+  // 60. 테이블 방 공통 규칙 (무르기 / 돌 바꾸기 / 게임 바꾸기 없음) + 채팅
+  {
+    const t = await thiefTable(2);
+    const cl = t.cl;
+    cl.forEach((c) => { c.box.length = 0; });
+    send(cl[0].ws, { type: 'undoRequest' });
+    send(cl[0].ws, { type: 'swapRequest' });
+    send(cl[0].ws, { type: 'restartRequest' });
+    send(cl[0].ws, { type: 'gameChangeRequest', game: 'omok' });
+    await wait(120);
+    assert('도둑잡기 테이블 방은 무르기·돌 바꾸기·재대국·게임 바꾸기 요청을 무시한다',
+      !cl[1].box.some((m) => ['undoRequest', 'swapRequest', 'restartRequest',
+        'gameChangeRequest'].indexOf(m.type) !== -1), cl[1].box.map((m) => m.type));
+
+    cl[1].box.length = 0;
+    send(cl[1].ws, { type: 'chat', text: '조커 누가 가졌지' });
+    const ch = await until(cl[0].box, (m) => m.type === 'chat');
+    assert('도둑잡기 채팅: 좌석 이름으로 전달',
+      ch.text === '조커 누가 가졌지' && ch.from === '플레이어 2' && ch.seat === 1, ch);
+
+    // 2인 방(오목)에서 도둑잡기로는 바꿀 수 없다 (테이블 종목)
+    const duo = await omokRoom();
+    duo.wm.length = 0;
+    send(duo.black, { type: 'gameChangeRequest', game: 'thief' });
+    await wait(100);
+    assert('2인 방: 도둑잡기로의 게임 변경 요청은 무시된다',
+      !duo.wm.some((m) => m.type === 'gameChangeRequest'), duo.wm.map((m) => m.type));
+    duo.black.close(); duo.white.close();
+
+    cl.forEach((c) => c.ws.close());
+    await wait(80);
+  }
+
   console.log('\n결과: ' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail === 0 ? 0 : 1);
 })();
